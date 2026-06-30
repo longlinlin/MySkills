@@ -49,6 +49,8 @@ When converting pasted code, first write it to a temporary `.c` or `.cpp` file, 
 
 For retry loops, task dispatchers, cleanup labels, hardware-style calls, or similar procedural C patterns, read `references/c-control-flow-patterns.md` before generating or reviewing diagrams.
 
+For building a Dify workflow or agent around `.analysis.json`, read `references/dify-agent-setup.md`.
+
 ## Generation Approach
 
 Use this mental model when maintaining or extending the converter:
@@ -152,6 +154,8 @@ The first version includes:
 Treat the JSON as deterministic analysis input. Let the LLM generate polished function descriptions, test-case names, mock setup, and concrete unit-test code from this structure.
 
 Parameter ranges are inferred from type and pointer/reference shape only. Use requirements, comments, comparisons, or caller context to refine ranges before generating final tests.
+
+For Dify integration, treat `.analysis.json` as the boundary between deterministic parsing and LLM generation. Keep code parsing in `code2flowchart.py` or a wrapper API; let Dify handle orchestration, prompt chaining, human review, and final report generation.
 
 ## Path Report
 
