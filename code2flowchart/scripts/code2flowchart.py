@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import math
 import os
 import re
@@ -547,6 +548,12 @@ class CParser:
             return False
         if idx + 1 >= len(self.tokens) or self.tokens[idx + 1].text != "(":
             return False
+        if idx > 0 and self.tokens[idx - 1].text in {"(", "[", ".", "->"}:
+            return False
+        if idx > 0 and self.tokens[idx - 1].text in {"=", "+", "-", "*", "/", "%", "!", "&&", "||", "?", ","}:
+            return False
+        if idx > 1 and self.tokens[idx - 1].text == "::":
+            return True
         prev_texts = [t.text for t in self.tokens[max(0, idx - 6) : idx]]
         return bool(prev_texts and any(t in TYPE_HINTS or re.match(r"^[A-Za-z_]\w*$", t) for t in prev_texts))
 
@@ -589,7 +596,7 @@ class CParser:
 
     def _header_start(self, name_idx: int) -> int:
         j = name_idx - 1
-        while j >= 0 and self.tokens[j].text not in {";", "}"}:
+        while j >= 0 and self.tokens[j].text not in {";", "{", "}"}:
             j -= 1
         return j + 1
 
@@ -1470,6 +1477,256 @@ def write_paths_report(path: Path, function_paths: list[FunctionPaths]) -> None:
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
+def statement_iter(statements: list[Statement]) -> Iterable[Statement]:
+    for stmt in statements:
+        yield stmt
+        yield from statement_iter(stmt.body)
+        yield from statement_iter(stmt.else_body)
+        for _, case_body in stmt.cases:
+            yield from statement_iter(case_body)
+
+
+def base_function_name(name: str) -> str:
+    if "::" in name:
+        return name.split("::")[-1]
+    return name
+
+
+def normalize_call_name(name: str) -> str:
+    return re.sub(r"\s*(::|->|\.)\s*", r"\1", name).strip()
+
+
+def extract_calls_from_label(label: str) -> list[str]:
+    calls: list[str] = []
+    pattern = re.compile(r"([A-Za-z_]\w*(?:(?:::|->|\.)\s*[A-Za-z_]\w*)*)\s*\(")
+    skip = CONTROL_KEYWORDS | {
+        "sizeof",
+        "alignof",
+        "decltype",
+        "static_cast",
+        "const_cast",
+        "reinterpret_cast",
+        "dynamic_cast",
+    }
+    for match in pattern.finditer(label):
+        name = normalize_call_name(match.group(1))
+        if name in skip or base_function_name(name) in skip:
+            continue
+        calls.append(name)
+    for scoped, bare in (("std::cin", "cin"), ("std::cout", "cout"), ("std::cerr", "cerr"), ("std::clog", "clog")):
+        if re.search(rf"\b{re.escape(scoped)}\b", label):
+            if scoped not in calls:
+                calls.append(scoped)
+        elif re.search(rf"(?<!::)\b{bare}\b", label) and bare not in calls:
+            calls.append(bare)
+    return calls
+
+
+def function_calls(fn: Function) -> list[str]:
+    calls: list[str] = []
+    for stmt in statement_iter(fn.body):
+        for call in extract_calls_from_label(stmt.label):
+            if call not in calls:
+                calls.append(call)
+    return calls
+
+
+def boolean_complexity(label: str) -> int:
+    return len(re.findall(r"&&|\|\|", label))
+
+
+def cyclomatic_complexity(fn: Function) -> int:
+    score = 1
+    for stmt in statement_iter(fn.body):
+        if stmt.kind in {"if", "for", "while", "do_while"}:
+            score += 1 + boolean_complexity(stmt.label)
+        elif stmt.kind == "switch":
+            score += max(1, len(stmt.cases))
+            score += boolean_complexity(stmt.label)
+        elif stmt.kind == "try":
+            score += len(stmt.cases)
+    return score
+
+
+def collect_branches(statements: list[Statement]) -> list[dict[str, object]]:
+    branches: list[dict[str, object]] = []
+
+    def visit(items: list[Statement]) -> None:
+        for stmt in items:
+            if stmt.kind == "if":
+                branches.append(
+                    {
+                        "id": len(branches) + 1,
+                        "kind": "if",
+                        "line": stmt.line,
+                        "condition": stmt.label,
+                        "outcomes": ["yes", "no"],
+                    }
+                )
+            elif stmt.kind in {"for", "while", "do_while"}:
+                branches.append(
+                    {
+                        "id": len(branches) + 1,
+                        "kind": stmt.kind,
+                        "line": stmt.line,
+                        "condition": stmt.label,
+                        "outcomes": ["enter/yes", "exit/no", "loop"],
+                    }
+                )
+            elif stmt.kind == "switch":
+                branches.append(
+                    {
+                        "id": len(branches) + 1,
+                        "kind": "switch",
+                        "line": stmt.line,
+                        "condition": stmt.label,
+                        "outcomes": [case_label for case_label, _ in stmt.cases] or ["default"],
+                    }
+                )
+            elif stmt.kind == "try":
+                branches.append(
+                    {
+                        "id": len(branches) + 1,
+                        "kind": "try",
+                        "line": stmt.line,
+                        "condition": "exception path",
+                        "outcomes": ["normal"] + [case_label for case_label, _ in stmt.cases],
+                    }
+                )
+            visit(stmt.body)
+            visit(stmt.else_body)
+            for _, case_body in stmt.cases:
+                visit(case_body)
+
+    visit(statements)
+    return branches
+
+
+def path_conditions(steps: list[PathStep]) -> list[str]:
+    conditions: list[str] = []
+    for step in steps:
+        label = step.edge_label
+        if re.search(r"\b(yes|no|case|default|loop|break|continue|return|throw|goto|catch)\b", label):
+            detail = f"{step.source_label} -> {label} -> {step.target_label}"
+            conditions.append(detail)
+    return conditions
+
+
+def path_to_json(idx: int, steps: list[PathStep]) -> dict[str, object]:
+    edges = [step.edge_no for step in steps if step.edge_no]
+    labels = [step.edge_label for step in steps]
+    conditions = path_conditions(steps)
+    return {
+        "id": idx,
+        "edge_sequence": edges,
+        "edge_sequence_text": "-".join(str(edge) for edge in edges),
+        "labels": labels,
+        "conditions": conditions,
+        "suggested_test_name": f"test_path_{idx:02d}",
+        "test_intent": "Cover path " + ("-".join(str(edge) for edge in edges) if edges else str(idx)),
+    }
+
+
+def graph_function_edges(graph: FlowGraph, function_name: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for edge in graph.edges:
+        source = graph.node(edge.source)
+        target = graph.node(edge.target)
+        if source.function != function_name or target.function != function_name:
+            continue
+        rows.append(
+            {
+                "edge_no": edge_number(edge.label),
+                "label": edge.label,
+                "source": source.label,
+                "target": target.label,
+                "backward": edge.backward,
+            }
+        )
+    return rows
+
+
+def draft_description(fn: Function, calls: list[str], branches: list[dict[str, object]]) -> str:
+    pieces = [f"Function `{fn.name}` starts at line {fn.line}"]
+    if branches:
+        pieces.append(f"contains {len(branches)} control-flow branch point(s)")
+    if calls:
+        pieces.append("calls " + ", ".join(calls[:8]))
+    return "; ".join(pieces) + "."
+
+
+def build_analysis(
+    source: Path,
+    functions: list[Function],
+    graph: FlowGraph,
+    function_paths: list[FunctionPaths],
+    artifacts: dict[str, Path],
+    xml_ok: bool,
+    xml_message: str,
+) -> dict[str, object]:
+    calls_by_function = {fn.name: function_calls(fn) for fn in functions}
+    simple_names = {fn.name: base_function_name(fn.name) for fn in functions}
+    called_by: dict[str, list[str]] = {fn.name: [] for fn in functions}
+    for caller, calls in calls_by_function.items():
+        for callee in functions:
+            targets = {callee.name, simple_names[callee.name]}
+            if any(base_function_name(call) in targets or call in targets for call in calls):
+                if caller != callee.name and caller not in called_by[callee.name]:
+                    called_by[callee.name].append(caller)
+
+    paths_by_function = {item.function: item for item in function_paths}
+    function_rows: list[dict[str, object]] = []
+    for fn in functions:
+        branches = collect_branches(fn.body)
+        calls = calls_by_function[fn.name]
+        paths = paths_by_function.get(fn.name, FunctionPaths(fn.name, []))
+        path_rows = [path_to_json(idx, steps) for idx, steps in enumerate(paths.paths, 1)]
+        function_rows.append(
+            {
+                "name": fn.name,
+                "signature": fn.header,
+                "line": fn.line,
+                "description_draft": draft_description(fn, calls, branches),
+                "cyclomatic_complexity": cyclomatic_complexity(fn),
+                "calls": calls,
+                "called_by_in_file": called_by[fn.name],
+                "branches": branches,
+                "branch_path_count": len(paths.paths),
+                "paths_truncated": paths.truncated,
+                "paths": path_rows,
+                "unit_test_scenarios": [
+                    {
+                        "id": row["id"],
+                        "name": row["suggested_test_name"],
+                        "covers_edges": row["edge_sequence"],
+                        "conditions": row["conditions"],
+                        "expected_focus": row["test_intent"],
+                    }
+                    for row in path_rows
+                ],
+                "cfg_edges": graph_function_edges(graph, fn.name),
+            }
+        )
+
+    return {
+        "schema_version": "0.1",
+        "tool": "code2Flowchart",
+        "source": str(source),
+        "xml_validation": {"ok": xml_ok, "message": xml_message},
+        "artifacts": {key: str(value) for key, value in artifacts.items()},
+        "functions": function_rows,
+        "agent_notes": [
+            "description_draft is deterministic and should be refined by an LLM before user-facing output.",
+            "called_by_in_file only uses functions parsed from the current input file; project-wide callers require scanning the whole project.",
+            "unit_test_scenarios are path coverage hints, not complete compile-ready test code.",
+        ],
+    }
+
+
+def write_analysis(path: Path, analysis: dict[str, object]) -> None:
+    path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def write_report(
     path: Path,
     functions: list[Function],
@@ -1501,6 +1758,7 @@ def write_report(
         [
             "",
             "See the generated `.paths.md` file for edge-number sequences such as `1-2-3-5`.",
+            "See the generated `.analysis.json` file for Dify/agent-friendly function analysis, branch paths, calls, complexity, and test scenarios.",
             "",
             "Supported constructs: if/else, for, while, do while, switch/case/default, break, continue, goto labels, return, basic C++ try/catch/throw, C stdio, and common C++ iostream calls.",
             "Limitations: heavy macros/templates, complex declarations, preprocessor-heavy code, lambdas, and unusual formatting may need manual cleanup.",
@@ -1521,6 +1779,7 @@ def convert(source: Path, out_dir: Path, basename: str | None = None) -> dict[st
         "png": out_dir / f"{name}.png",
         "paths": out_dir / f"{name}.paths.md",
         "report": out_dir / f"{name}.report.md",
+        "analysis": out_dir / f"{name}.analysis.json",
     }
     write_mermaid(graph, paths["mermaid"])
     write_drawio(graph, paths["drawio"])
@@ -1530,6 +1789,7 @@ def convert(source: Path, out_dir: Path, basename: str | None = None) -> dict[st
     write_paths_report(paths["paths"], function_paths)
     ok, message = validate_drawio(paths["drawio"])
     write_report(paths["report"], functions, ok, message, function_paths)
+    write_analysis(paths["analysis"], build_analysis(source, functions, graph, function_paths, paths, ok, message))
     if not ok:
         raise RuntimeError(message)
     return paths

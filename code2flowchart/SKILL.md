@@ -14,6 +14,7 @@ Use this skill to convert C/C++ control flow into visual artifacts:
 - SVG and PNG previews for quick inspection.
 - A conversion report with XML validation status, parser notes, and function path counts.
 - A `.paths.md` report listing Start-to-End edge-number sequences for each function.
+- An `.analysis.json` file for Dify/agent workflows, including function summaries, cyclomatic complexity, calls, in-file callers, branches, path sequences, and unit-test scenario hints.
 
 The bundled converter is intentionally lightweight. It targets readable C/C++ source files and common procedural control flow, not full compiler-grade C or C++ parsing.
 
@@ -33,6 +34,7 @@ For a file named `demo.c`, outputs are:
 - `demo.png`
 - `demo.paths.md`
 - `demo.report.md`
+- `demo.analysis.json`
 
 When converting pasted code, first write it to a temporary `.c` or `.cpp` file, then run the script.
 
@@ -41,8 +43,9 @@ When converting pasted code, first write it to a temporary `.c` or `.cpp` file, 
 1. Save or locate the input C/C++ source file.
 2. Run `scripts/code2flowchart.py` with an output directory.
 3. Read the generated `.report.md`.
-4. If XML validation is OK, return the `.drawio`, `.svg`, `.png`, and `.mmd` paths to the user.
-5. If parsing misses important logic, simplify macro-heavy code, expand macros manually, or isolate the target function and rerun.
+4. Use `.analysis.json` as the structured input for downstream Dify/agent prompts.
+5. If XML validation is OK, return the `.drawio`, `.svg`, `.png`, `.mmd`, `.paths.md`, and `.analysis.json` paths to the user.
+6. If parsing misses important logic, simplify macro-heavy code, expand macros manually, or isolate the target function and rerun.
 
 For retry loops, task dispatchers, cleanup labels, hardware-style calls, or similar procedural C patterns, read `references/c-control-flow-patterns.md` before generating or reviewing diagrams.
 
@@ -60,7 +63,7 @@ Use this mental model when maintaining or extending the converter:
    normal execution goes downward, branch bodies sit left/right, loop-back edges use a left-side channel, and break/goto exits use staggered side channels.
 7. Reserve extra vertical space after loops with break exits so jump edges can merge above the next ordinary node.
 8. Generate artifacts from the same graph model:
-   Mermaid for inspection, draw.io XML for editing, SVG/PNG for preview, and `.paths.md` for branch path sequences.
+   Mermaid for inspection, draw.io XML for editing, SVG/PNG for preview, `.paths.md` for branch path sequences, and `.analysis.json` for agent-readable analysis.
 9. Validate the `.drawio` file as XML and verify it contains `mxGraphModel/root`.
 
 Do not rely on Mermaid layout for final quality. Mermaid is only an intermediate text representation; draw.io XML is the editable target.
@@ -124,6 +127,23 @@ When exact semantics matter, tell the user this is a visual aid and not a compil
 Always check the generated report. The script parses the `.drawio` file as XML and verifies that it contains `mxGraphModel/root`.
 
 If validation fails, do not present the `.drawio` as complete. Fix the converter or reduce the input and rerun.
+
+## Agent Analysis JSON
+
+Use `.analysis.json` as the stable bridge into Dify or a later test-generation agent.
+
+The first version includes:
+
+- `functions[].description_draft`: deterministic function description seed for LLM refinement.
+- `functions[].cyclomatic_complexity`: decision-based complexity estimate.
+- `functions[].calls`: functions or IO streams called by the function.
+- `functions[].called_by_in_file`: callers found among functions parsed in the same input file.
+- `functions[].branches`: branch points with condition, source line, type, and outcomes.
+- `functions[].paths`: Start-to-End edge-number sequences with labels and conditions.
+- `functions[].unit_test_scenarios`: one scenario hint per path for branch/unit-test planning.
+- `functions[].cfg_edges`: numbered control-flow edges for traceability back to the diagram.
+
+Treat the JSON as deterministic analysis input. Let the LLM generate polished function descriptions, test-case names, mock setup, and concrete unit-test code from this structure.
 
 ## Path Report
 
