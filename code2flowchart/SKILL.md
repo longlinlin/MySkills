@@ -1,13 +1,13 @@
 ---
-name: code2flow
-description: Convert C source code into flowcharts with Mermaid as an intermediate format and draw.io XML as the editable target. Use when Codex needs to turn .c files or pasted C functions into .drawio diagrams, SVG/PNG previews, Mermaid .mmd flowcharts, or function branch path reports, especially for teaching, lab, embedded, and procedural C code using if/else, for, while, do while, switch/case/default, break, continue, goto labels, return, task calls, hardware calls, and common stdio calls.
+name: code2flowchart
+description: Convert C and C++ source code into flowcharts with Mermaid as an intermediate format and draw.io XML as the editable target. Use when Codex needs to turn .c, .h, .cpp, .cc, .cxx, .hpp files or pasted C/C++ functions into .drawio diagrams, SVG/PNG previews, Mermaid .mmd flowcharts, or function branch path reports, especially for teaching, lab, embedded, and procedural code using if/else, for, while, do while, switch/case/default, break, continue, goto labels, return, basic try/catch/throw, task calls, hardware calls, stdio calls, and C++ iostream calls.
 ---
 
-# code2flow
+# code2Flowchart
 
 ## Overview
 
-Use this skill to convert C control flow into visual artifacts:
+Use this skill to convert C/C++ control flow into visual artifacts:
 
 - Mermaid `.mmd` as a readable intermediate representation.
 - draw.io `.drawio` XML for editable diagrams.
@@ -15,14 +15,14 @@ Use this skill to convert C control flow into visual artifacts:
 - A conversion report with XML validation status, parser notes, and function path counts.
 - A `.paths.md` report listing Start-to-End edge-number sequences for each function.
 
-The bundled converter is intentionally lightweight. It targets readable C source files and common procedural control flow, not full compiler-grade C parsing.
+The bundled converter is intentionally lightweight. It targets readable C/C++ source files and common procedural control flow, not full compiler-grade C or C++ parsing.
 
 ## Quick Start
 
 Run the converter directly:
 
 ```bash
-python code2flow/scripts/code2flow.py path/to/source.c -o path/to/output
+python code2flowchart/scripts/code2flowchart.py path/to/source.c -o path/to/output
 ```
 
 For a file named `demo.c`, outputs are:
@@ -34,12 +34,12 @@ For a file named `demo.c`, outputs are:
 - `demo.paths.md`
 - `demo.report.md`
 
-When converting pasted code, first write it to a temporary `.c` file, then run the script.
+When converting pasted code, first write it to a temporary `.c` or `.cpp` file, then run the script.
 
 ## Workflow
 
-1. Save or locate the input C source file.
-2. Run `scripts/code2flow.py` with an output directory.
+1. Save or locate the input C/C++ source file.
+2. Run `scripts/code2flowchart.py` with an output directory.
 3. Read the generated `.report.md`.
 4. If XML validation is OK, return the `.drawio`, `.svg`, `.png`, and `.mmd` paths to the user.
 5. If parsing misses important logic, simplify macro-heavy code, expand macros manually, or isolate the target function and rerun.
@@ -50,10 +50,10 @@ For retry loops, task dispatchers, cleanup labels, hardware-style calls, or simi
 
 Use this mental model when maintaining or extending the converter:
 
-1. Tokenize C source while ignoring comments and preprocessor bodies.
-2. Parse top-level function definitions and build a lightweight statement tree.
+1. Tokenize C/C++ source while ignoring comments and preprocessor bodies.
+2. Parse function definitions and build a lightweight statement tree. Include common C++ free functions, namespace functions, constructors, and class-scope or `Class::method` member functions when their bodies are visible.
 3. Normalize control-flow constructs into graph nodes:
-   `Start`, ordinary process, IO, decision, label/goto, return, and `End`.
+   `Start`, ordinary process, IO, decision, label/goto, return/throw, and `End`.
 4. Convert simple jump branches such as `if (...) { break; }` into labeled edges like `yes break` instead of separate boxes. This keeps loop diagrams compact and avoids tangled jump lines.
 5. Build edges in execution order and assign monotonically increasing edge numbers.
 6. Lay out each function on a dominant vertical spine:
@@ -69,12 +69,15 @@ Do not rely on Mermaid layout for final quality. Mermaid is only an intermediate
 
 Use these conventions when interpreting or editing the output:
 
-- Start and End use ellipses.
+- Start and End use ellipses / terminator shapes.
 - Start and End labels should be exactly `Start` and `End`; do not add a separate function-title box above Start.
-- `if`, `for`, `while`, `do while`, and `switch` use diamonds.
+- Ordinary processing steps use rectangles.
+- `if`, `else if`, `for`, `while`, `do while`, and `switch` use diamonds.
 - Ordinary statements use rectangles.
-- `printf`, `scanf`, and common stdio calls use parallelograms.
+- Input/output steps use parallelograms, including `printf`, `scanf`, common stdio calls, and C++ `std::cin` / `std::cout` / `std::cerr` / `std::clog` style statements.
 - `return` uses an ellipse and connects to the function End.
+- `throw` uses an ellipse and connects to End with a `throw` edge because it leaves the current normal flow.
+- `try` uses a process node; each `catch (...)` is a labeled branch from the try node.
 - Simple `if (...) { break; }` and `if (...) { continue; }` branches should be rendered as labeled edges such as `yes break`, not as separate statement boxes.
 - Standalone or complex `break` / `continue` statements may use highlighted rounded rectangles.
 - `goto` uses a distinct highlighted process node and connects directly to its label.
@@ -87,26 +90,31 @@ Use these conventions when interpreting or editing the output:
 
 For more detail, read `references/flowchart-conventions.md`.
 
-## Supported C Constructs
+## Supported C/C++ Constructs
 
 The converter currently handles:
 
-- Function definitions.
+- C function definitions.
+- Common C++ free functions, namespace functions, constructors, and class member functions with visible bodies.
 - Sequential statements and declarations.
 - `if`, `else`, and `else if`.
 - `for`, `while`, and `do while`.
 - `switch`, `case`, and `default`.
 - `break`, `continue`, `goto` labels, and `return`.
+- Basic C++ `try`, `catch`, and `throw`.
 - Common stdio-style calls such as `printf`, `scanf`, `puts`, `getchar`, and `putchar`.
+- Common C++ iostream-style statements such as `std::cout << value` and `std::cin >> value`.
 
 ## Known Limits
 
 Expect manual review for:
 
 - Heavy macro/preprocessor logic.
+- Heavy template metaprogramming and overloaded operator syntax.
 - Function pointers and complex declaration syntax.
 - Interprocedural call graphs.
 - Struct initializers or expressions containing unmatched braces.
+- Lambdas and deeply nested class/namespace constructs.
 - Compiler extensions.
 
 When exact semantics matter, tell the user this is a visual aid and not a compiler-verified control-flow graph.

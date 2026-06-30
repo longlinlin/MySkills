@@ -1,6 +1,6 @@
-# C Control Flow Pattern Reference
+# C/C++ Control Flow Pattern Reference
 
-Use this reference for flowcharts modeled after procedural C functions with retry loops, cleanup paths, task dispatchers, labels, hardware-style calls, or similar branch-heavy code. The examples below are drawn from an embedded C test file, but the drawing patterns are not STM32-specific.
+Use this reference for flowcharts modeled after procedural C/C++ functions with retry loops, cleanup paths, task dispatchers, labels, hardware-style calls, iostream/stdout-style calls, or similar branch-heavy code. The examples below are drawn from an embedded C test file, but the drawing patterns are not STM32-specific and can also guide C++ member functions with similar control flow.
 
 ## Function Inventory
 

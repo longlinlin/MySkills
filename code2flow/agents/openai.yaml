@@ -1,4 +1,0 @@
-interface:
-  display_name: "code2flow"
-  short_description: "Convert C control flow into draw.io diagrams."
-  default_prompt: "Use $code2flow to convert this C source file into a draw.io flowchart with SVG and PNG previews."

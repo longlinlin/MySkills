@@ -4,18 +4,20 @@ Use this reference when adjusting the converter or manually reviewing generated 
 
 ## Shapes
 
-- Start: ellipse.
-- End: ellipse.
+- Start: ellipse / terminator shape. The label must be exactly `Start`.
+- End: ellipse / terminator shape. The label must be exactly `End`.
 - Do not add a separate function header box above Start. Keep function names in reports and filenames, not as an extra top-level flowchart node.
 - Return: ellipse connected to the function End.
+- Throw: ellipse connected to End with a `throw` edge because it exits normal local control flow.
 - Process/declaration/assignment/function call: rectangle.
-- Input/output such as `printf`, `scanf`, `puts`, `getchar`, `putchar`: parallelogram.
+- Input/output such as `printf`, `scanf`, `puts`, `getchar`, `putchar`, `std::cin`, `std::cout`, `std::cerr`, `std::clog`: parallelogram.
 - Decision constructs: diamond.
   - `if` / `else if`
   - `for`
   - `while`
   - `do while`
   - `switch`
+- C++ `try`: process rectangle. `catch (...)` clauses are labeled outgoing branches.
 - Simple `if (...) { break; }` / `if (...) { continue; }`: labeled edge, not a separate node.
 - Standalone or complex `break` and `continue`: highlighted rounded rectangle.
 - `goto`: highlighted process node.
@@ -57,6 +59,8 @@ Use this reference when adjusting the converter or manually reviewing generated 
 - `goto`: connects directly to the matching label and does not fall through to the next statement.
 - Label: acts as a merge point, then continues downward through cleanup or subsequent statements.
 - `return`: connects directly to the function End and does not merge into later statements.
+- `throw`: connects directly to End unless a local `catch` branch is modeled.
+- `try/catch`: draw the try body as normal flow and each catch as a labeled side branch. Keep catch branches orthogonal and merge after the catch body when execution can continue.
 
 ## Semantics
 
@@ -64,6 +68,14 @@ Use this reference when adjusting the converter or manually reviewing generated 
 - `break` exits the nearest loop or switch.
 - `continue` returns to the nearest loop condition/update.
 - `switch` cases are visual branches. Fallthrough can be ambiguous; review generated case exits manually when a case does not contain `break` or `return`.
+
+## C++ Notes
+
+- Accept `.cpp`, `.cc`, `.cxx`, `.hpp`, and similar pasted snippets as C++ inputs.
+- Parse visible function bodies only. Declarations, pure virtual functions, `= default`, and `= delete` do not produce flowcharts.
+- Prefer readable member names such as `Class::method` in reports when the scope is visible.
+- Treat `std::cout << ...`, `std::cin >> ...`, `std::cerr << ...`, and `std::clog << ...` as input/output nodes.
+- Expect manual review for lambdas, overloaded operators, template-heavy code, and macro-generated functions.
 
 ## Mermaid Intermediate
 

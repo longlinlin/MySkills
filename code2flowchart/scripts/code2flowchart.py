@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Convert C source code into Mermaid, draw.io XML, SVG, and PNG flowchart previews.
+Convert C/C++ source code into Mermaid, draw.io XML, SVG, and PNG flowchart previews.
 
-The parser is intentionally lightweight. It targets teaching/lab-style C code and
-the most common control-flow constructs rather than full ISO C grammar.
+The parser is intentionally lightweight. It targets teaching/lab-style C/C++ code and
+the most common control-flow constructs rather than full ISO C or C++ grammar.
 """
 
 from __future__ import annotations
@@ -35,6 +35,9 @@ CONTROL_KEYWORDS = {
     "continue",
     "goto",
     "return",
+    "try",
+    "catch",
+    "throw",
 }
 
 TYPE_HINTS = {
@@ -58,6 +61,20 @@ TYPE_HINTS = {
     "inline",
     "_Bool",
     "bool",
+    "auto",
+    "class",
+    "typename",
+    "template",
+    "constexpr",
+    "consteval",
+    "constinit",
+    "mutable",
+    "virtual",
+    "explicit",
+    "friend",
+    "public",
+    "private",
+    "protected",
 }
 
 IO_NAMES = {
@@ -72,6 +89,14 @@ IO_NAMES = {
     "fscanf",
     "sprintf",
     "sscanf",
+    "cin",
+    "cout",
+    "cerr",
+    "clog",
+    "std::cin",
+    "std::cout",
+    "std::cerr",
+    "std::clog",
 }
 
 
@@ -181,7 +206,7 @@ class CTokenizer:
                 continue
             two = self.code[self.i : self.i + 2]
             three = self.code[self.i : self.i + 3]
-            if three in {"<<=", ">>="}:
+            if three in {"<<=", ">>=", "->*", "<=>"}:
                 tokens.append(Token(three, self.line))
                 self.i += 3
                 continue
@@ -200,6 +225,8 @@ class CTokenizer:
                 "/=",
                 "%=",
                 "->",
+                "::",
+                ".*",
                 "<<",
                 ">>",
             }:
@@ -294,14 +321,14 @@ class CParser:
                 depth = max(0, depth - 1)
                 i += 1
                 continue
-            if depth == 0 and self._looks_like_function_at(i):
+            if self._looks_like_function_at(i):
                 name_idx = i
                 lparen = i + 1
                 rparen = self._find_match(lparen, "(", ")")
                 if rparen is None:
                     i += 1
                     continue
-                brace = self._next_non_ws(rparen + 1)
+                brace = self._body_brace_after_signature(rparen + 1)
                 if brace is None or self.tokens[brace].text != "{":
                     i += 1
                     continue
@@ -315,7 +342,7 @@ class CParser:
                 sub = CParser(body_tokens)
                 body = sub.parse_block(stop_at_case=False)
                 functions.append(
-                    Function(self.tokens[name_idx].text, header, body, self.tokens[name_idx].line)
+                    Function(self._function_name(name_idx), header, body, self.tokens[name_idx].line)
                 )
                 i = end + 1
                 continue
@@ -357,8 +384,12 @@ class CParser:
             return self.parse_do_while()
         if tok.text == "switch":
             return self.parse_switch()
+        if tok.text == "try":
+            return self.parse_try()
         if tok.text == "return":
             return self.parse_simple("return")
+        if tok.text == "throw":
+            return self.parse_simple("throw")
         if tok.text == "goto":
             return self.parse_simple("goto")
         if tok.text == "break":
@@ -429,6 +460,21 @@ class CParser:
         self.consume("}")
         return Statement("switch", label=f"switch ({cond})", cases=cases, line=line)
 
+    def parse_try(self) -> Statement:
+        line = self.current().line
+        self.i += 1
+        body = to_body(self.parse_statement())
+        catches: list[tuple[str, list[Statement]]] = []
+        while self.peek("catch"):
+            catch_line = self.current().line
+            self.i += 1
+            cond = self.read_parenthesized()
+            catch_body = to_body(self.parse_statement())
+            if catch_body:
+                catch_body[0].line = min(catch_body[0].line or catch_line, catch_line)
+            catches.append((f"catch ({cond})", catch_body))
+        return Statement("try", label="try", body=body, cases=catches, line=line)
+
     def parse_simple(self, kind: str) -> Statement:
         line = self.current().line
         parts = self.read_until(";")
@@ -441,7 +487,7 @@ class CParser:
         parts = self.read_until(";")
         self.consume(";")
         label = compact_tokens(parts)
-        kind = "io" if re.search(r"\b(" + "|".join(IO_NAMES) + r")\s*\(", label) else "expr"
+        kind = "io" if is_io_label(label) else "expr"
         return Statement(kind, label=label, line=line)
 
     def read_parenthesized(self) -> str:
@@ -518,11 +564,49 @@ class CParser:
     def _next_non_ws(self, start: int) -> int | None:
         return start if start < len(self.tokens) else None
 
+    def _body_brace_after_signature(self, start: int) -> int | None:
+        j = start
+        while j < len(self.tokens):
+            text = self.tokens[j].text
+            if text == "{":
+                return j
+            if text in {";", "="}:
+                return None
+            if text == "(":
+                end = self._find_match(j, "(", ")")
+                if end is None:
+                    return None
+                j = end + 1
+                continue
+            if text == "[":
+                end = self._find_match(j, "[", "]")
+                if end is None:
+                    return None
+                j = end + 1
+                continue
+            j += 1
+        return None
+
     def _header_start(self, name_idx: int) -> int:
         j = name_idx - 1
         while j >= 0 and self.tokens[j].text not in {";", "}"}:
             j -= 1
         return j + 1
+
+    def _function_name(self, name_idx: int) -> str:
+        name = self.tokens[name_idx].text
+        left = name_idx - 1
+        if left >= 0 and self.tokens[left].text == "~":
+            name = "~" + name
+            left -= 1
+        while left >= 1 and self.tokens[left].text == "::":
+            qualifier = self.tokens[left - 1].text
+            if re.match(r"^[A-Za-z_]\w*$", qualifier):
+                name = qualifier + "::" + name
+                left -= 2
+                continue
+            break
+        return name
 
 
 def to_body(stmt: Statement | None) -> list[Statement]:
@@ -538,8 +622,8 @@ def compact_tokens(tokens: Iterable[Token]) -> str:
     if not raw:
         return ""
     out = ""
-    no_space_before = {")", "]", "}", ";", ",", ":", "++", "--"}
-    no_space_after = {"(", "[", "{", ".", "->", "++", "--", "!"}
+    no_space_before = {")", "]", "}", ";", ",", ":", "::", "++", "--"}
+    no_space_after = {"(", "[", "{", ".", "->", "::", "++", "--", "!", "~"}
     operators = {
         "=",
         "+",
@@ -560,6 +644,8 @@ def compact_tokens(tokens: Iterable[Token]) -> str:
         "*=",
         "/=",
         "%=",
+        "<<",
+        ">>",
     }
     prev = ""
     for part in raw:
@@ -573,6 +659,13 @@ def compact_tokens(tokens: Iterable[Token]) -> str:
             out += " " + part
         prev = part
     return out.strip()
+
+
+def is_io_label(label: str) -> bool:
+    names = "|".join(re.escape(name) for name in sorted(IO_NAMES, key=len, reverse=True))
+    if re.search(r"\b(" + names + r")\s*\(", label):
+        return True
+    return bool(re.search(r"\b(std::)?(cin|cout|cerr|clog)\b", label))
 
 
 class FlowGraph:
@@ -706,6 +799,11 @@ class FlowBuilder:
             self.g.connect(incoming, node)
             self.g.add_edge(node, self.end_id, "return")
             return [ExitRef(node, kind="return")], y + self.Y_GAP
+        if stmt.kind == "throw":
+            node = self.g.add_node("return", stmt.label, x, y, self.function)
+            self.g.connect(incoming, node)
+            self.g.add_edge(node, self.end_id, "throw")
+            return [ExitRef(node, kind="throw")], y + self.Y_GAP
         if stmt.kind == "goto":
             node = self.g.add_node("goto", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
@@ -727,6 +825,8 @@ class FlowBuilder:
             return self.build_do_while(stmt, incoming, x, y)
         if stmt.kind == "switch":
             return self.build_switch(stmt, incoming, x, y)
+        if stmt.kind == "try":
+            return self.build_try(stmt, incoming, x, y)
         node = self.g.add_node("expr", stmt.label or stmt.kind, x, y, self.function)
         self.g.connect(incoming, node)
         return [ExitRef(node)], y + self.Y_GAP
@@ -831,12 +931,32 @@ class FlowBuilder:
             max_y = max(max_y, case_y)
         return exits, max_y + 20
 
+    def build_try(
+        self, stmt: Statement, incoming: list[ExitRef], x: float, y: float
+    ) -> tuple[list[ExitRef], float]:
+        try_node = self.g.add_node("expr", "try", x, y, self.function)
+        self.g.connect(incoming, try_node)
+        exits: list[ExitRef] = []
+        body_exits, body_y = self.build_sequence(stmt.body, [ExitRef(try_node)], x, y + self.Y_GAP)
+        exits.extend(body_exits)
+        catch_count = len(stmt.cases)
+        start_x = x - self.X_GAP * (catch_count - 1) / 2 if catch_count else x
+        max_y = body_y
+        for idx, (catch_label, body) in enumerate(stmt.cases):
+            catch_x = start_x + idx * self.X_GAP
+            catch_exits, catch_y = self.build_sequence(
+                body, [ExitRef(try_node, catch_label)], catch_x, y + self.Y_GAP
+            )
+            exits.extend(catch_exits)
+            max_y = max(max_y, catch_y)
+        return exits, max_y + 20
+
 
 def cond_y_after(node: Node) -> float:
     return node.y + node.h + FlowBuilder.Y_GAP
 
 
-def parse_c_source(path: Path) -> list[Function]:
+def parse_source(path: Path) -> list[Function]:
     code = path.read_text(encoding="utf-8", errors="replace")
     tokens = CTokenizer(code).tokenize()
     return CParser(tokens).parse_functions()
@@ -891,7 +1011,7 @@ def mermaid_escape(value: str) -> str:
 
 
 def write_drawio(graph: FlowGraph, path: Path) -> None:
-    mxfile = ET.Element("mxfile", {"host": "code2flow", "agent": "python", "version": "1.0"})
+    mxfile = ET.Element("mxfile", {"host": "code2flowchart", "agent": "python", "version": "1.0"})
     diagram = ET.SubElement(mxfile, "diagram", {"name": "Page-1", "id": "c-flowchart"})
     model = ET.SubElement(
         diagram,
@@ -1358,7 +1478,7 @@ def write_report(
     function_paths: list[FunctionPaths],
 ) -> None:
     lines = [
-        "# code2flow conversion report",
+        "# code2Flowchart conversion report",
         "",
         f"XML validation: {'OK' if ok else 'FAILED'}",
         f"Validation message: {message}",
@@ -1382,8 +1502,8 @@ def write_report(
             "",
             "See the generated `.paths.md` file for edge-number sequences such as `1-2-3-5`.",
             "",
-            "Supported constructs: if/else, for, while, do while, switch/case/default, break, continue, goto labels, return, common stdio calls.",
-            "Limitations: heavy macros, complex declarations, preprocessor-heavy code, and unusual formatting may need manual cleanup.",
+            "Supported constructs: if/else, for, while, do while, switch/case/default, break, continue, goto labels, return, basic C++ try/catch/throw, C stdio, and common C++ iostream calls.",
+            "Limitations: heavy macros/templates, complex declarations, preprocessor-heavy code, lambdas, and unusual formatting may need manual cleanup.",
         ]
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1392,7 +1512,7 @@ def write_report(
 def convert(source: Path, out_dir: Path, basename: str | None = None) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     name = basename or source.stem
-    functions = parse_c_source(source)
+    functions = parse_source(source)
     graph = build_graph(functions)
     paths = {
         "mermaid": out_dir / f"{name}.mmd",
@@ -1416,8 +1536,8 @@ def convert(source: Path, out_dir: Path, basename: str | None = None) -> dict[st
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Convert C source to Mermaid, draw.io XML, SVG, and PNG.")
-    parser.add_argument("source", type=Path, help="Input .c file")
+    parser = argparse.ArgumentParser(description="Convert C/C++ source to Mermaid, draw.io XML, SVG, and PNG.")
+    parser.add_argument("source", type=Path, help="Input C/C++ source file")
     parser.add_argument("-o", "--out-dir", type=Path, default=None, help="Output directory")
     parser.add_argument("--name", default=None, help="Output basename without extension")
     args = parser.parse_args(argv)
