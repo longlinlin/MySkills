@@ -1,6 +1,6 @@
-# STM32 Test Function Reference
+# C Control Flow Pattern Reference
 
-Use this reference for flowcharts modeled after `D:/STM32/spa5000_old/Src/app/test.c`.
+Use this reference for flowcharts modeled after procedural C functions with retry loops, cleanup paths, task dispatchers, labels, hardware-style calls, or similar branch-heavy code. The examples below are drawn from an embedded C test file, but the drawing patterns are not STM32-specific.
 
 ## Function Inventory
 
@@ -82,7 +82,7 @@ Use this structure for repeated wait loops:
 
 ## Path Reporting
 
-For this file family, `.paths.md` is especially useful:
+For this pattern family, `.paths.md` is especially useful:
 
 - Early cancel paths should include the edge from `testReg == TESTREG_END` to `goto __end` or cleanup.
 - Timeout paths should include the `retry == 0` yes branch.

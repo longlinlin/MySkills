@@ -1,9 +1,9 @@
 ---
-name: code2drawio
-description: Convert C source code into flowcharts with Mermaid as an intermediate format and draw.io XML as the editable target. Use when Codex needs to turn .c files or pasted C functions into .drawio diagrams, SVG/PNG previews, Mermaid .mmd flowcharts, or function branch path reports, especially for teaching/lab-style and STM32-style code using if/else, for, while, do while, switch/case/default, break, continue, goto labels, return, task calls, hardware calls, and common stdio calls.
+name: code2flow
+description: Convert C source code into flowcharts with Mermaid as an intermediate format and draw.io XML as the editable target. Use when Codex needs to turn .c files or pasted C functions into .drawio diagrams, SVG/PNG previews, Mermaid .mmd flowcharts, or function branch path reports, especially for teaching, lab, embedded, and procedural C code using if/else, for, while, do while, switch/case/default, break, continue, goto labels, return, task calls, hardware calls, and common stdio calls.
 ---
 
-# code2drawio
+# code2flow
 
 ## Overview
 
@@ -22,7 +22,7 @@ The bundled converter is intentionally lightweight. It targets readable C source
 Run the converter directly:
 
 ```bash
-python code2drawio/scripts/code2drawio.py path/to/source.c -o path/to/output
+python code2flow/scripts/code2flow.py path/to/source.c -o path/to/output
 ```
 
 For a file named `demo.c`, outputs are:
@@ -39,12 +39,12 @@ When converting pasted code, first write it to a temporary `.c` file, then run t
 ## Workflow
 
 1. Save or locate the input C source file.
-2. Run `scripts/code2drawio.py` with an output directory.
+2. Run `scripts/code2flow.py` with an output directory.
 3. Read the generated `.report.md`.
 4. If XML validation is OK, return the `.drawio`, `.svg`, `.png`, and `.mmd` paths to the user.
 5. If parsing misses important logic, simplify macro-heavy code, expand macros manually, or isolate the target function and rerun.
 
-For STM32 test-task code modeled after `D:/STM32/spa5000_old/Src/app/test.c`, read `references/stm32-test-patterns.md` before generating or reviewing diagrams.
+For retry loops, task dispatchers, cleanup labels, hardware-style calls, or similar procedural C patterns, read `references/c-control-flow-patterns.md` before generating or reviewing diagrams.
 
 ## Generation Approach
 

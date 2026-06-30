@@ -891,7 +891,7 @@ def mermaid_escape(value: str) -> str:
 
 
 def write_drawio(graph: FlowGraph, path: Path) -> None:
-    mxfile = ET.Element("mxfile", {"host": "code2drawio", "agent": "python", "version": "1.0"})
+    mxfile = ET.Element("mxfile", {"host": "code2flow", "agent": "python", "version": "1.0"})
     diagram = ET.SubElement(mxfile, "diagram", {"name": "Page-1", "id": "c-flowchart"})
     model = ET.SubElement(
         diagram,
@@ -1358,7 +1358,7 @@ def write_report(
     function_paths: list[FunctionPaths],
 ) -> None:
     lines = [
-        "# code2drawio conversion report",
+        "# code2flow conversion report",
         "",
         f"XML validation: {'OK' if ok else 'FAILED'}",
         f"Validation message: {message}",
