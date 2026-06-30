@@ -1496,6 +1496,161 @@ def normalize_call_name(name: str) -> str:
     return re.sub(r"\s*(::|->|\.)\s*", r"\1", name).strip()
 
 
+def split_top_level(text: str, separator: str = ",") -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for idx, ch in enumerate(text):
+        if ch in "([{<":
+            depth += 1
+        elif ch in ")]}>":
+            depth = max(0, depth - 1)
+        elif ch == separator and depth == 0:
+            parts.append(text[start:idx].strip())
+            start = idx + 1
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def clean_type(type_text: str) -> str:
+    return re.sub(r"\s+", " ", type_text.replace(" *", "*").replace(" &", "&")).strip()
+
+
+def parse_function_signature(header: str, function_name: str) -> dict[str, object]:
+    match = re.search(r"\((.*)\)", header)
+    params_text = match.group(1).strip() if match else ""
+    prefix = header[: match.start()].strip() if match else header.strip()
+    short_name = base_function_name(function_name).lstrip("~")
+    name_pos = prefix.rfind(short_name)
+    return_type = prefix[:name_pos].strip() if name_pos >= 0 else prefix
+    return_type = re.sub(r"\b(static|extern|inline|virtual|explicit|friend|constexpr|consteval)\b", "", return_type)
+    return_type = clean_type(return_type) or ("destructor" if function_name.split("::")[-1].startswith("~") else "constructor/implicit")
+    return {
+        "return_type": return_type,
+        "parameters": parse_parameters(params_text),
+    }
+
+
+def parse_parameters(params_text: str) -> list[dict[str, object]]:
+    if not params_text or params_text == "void":
+        return []
+    params: list[dict[str, object]] = []
+    for idx, raw_param in enumerate(split_top_level(params_text), 1):
+        params.append(parse_parameter(raw_param, idx))
+    return params
+
+
+def parse_parameter(raw_param: str, index: int) -> dict[str, object]:
+    raw = re.sub(r"=.*$", "", raw_param.strip()).strip()
+    array_suffix = ""
+    array_match = re.search(r"(\[[^\]]*\])\s*$", raw)
+    if array_match:
+        array_suffix = array_match.group(1)
+        raw = raw[: array_match.start()].strip()
+    parts = raw.split()
+    if not parts:
+        name = f"param{index}"
+        type_text = "unknown"
+    else:
+        name = parts[-1]
+        type_text = " ".join(parts[:-1])
+        pointer_prefix = ""
+        while name.startswith("*") or name.startswith("&"):
+            pointer_prefix += name[0]
+            name = name[1:]
+        type_text = clean_type((type_text + " " + pointer_prefix).strip())
+        if not type_text:
+            type_text = "unknown"
+    name = re.sub(r"[^A-Za-z_]\w*$", "", name) or f"param{index}"
+    if array_suffix:
+        type_text = clean_type(type_text + " " + array_suffix)
+    direction = infer_parameter_direction(type_text, name)
+    return {
+        "index": index,
+        "name": name,
+        "type": type_text,
+        "direction": direction,
+        "is_pointer": "*" in type_text or "[" in type_text,
+        "is_reference": "&" in type_text,
+        "is_const": bool(re.search(r"\bconst\b", type_text)),
+        "range": infer_type_range(type_text),
+        "description_draft": describe_parameter(name, type_text, direction),
+    }
+
+
+def infer_parameter_direction(type_text: str, name: str = "") -> str:
+    is_const = bool(re.search(r"\bconst\b", type_text))
+    output_name = bool(re.search(r"(^out_|^output$|^result$|^ret_|^dst$|^dest$)", name))
+    if "[" in type_text:
+        return "input" if is_const else ("output" if output_name else "input_output")
+    if "*" in type_text or "&" in type_text:
+        return "input" if is_const else ("output" if output_name else "input_output")
+    return "input"
+
+
+def infer_type_range(type_text: str) -> str:
+    text = type_text.replace("const", "").strip()
+    if re.search(r"\b(std::)?string\b", text):
+        return "empty, nominal text, long text, and special-character text"
+    if re.search(r"\bchar\b", text) and ("*" in text or "[" in text):
+        return "null/empty string, nominal string, max-length string, and invalid buffer when allowed"
+    if "*" in text or "&" in text or "[" in text:
+        if "&" in text and "*" not in text:
+            return "valid referenced object; include boundary values for the referenced data"
+        return "valid object/buffer; include null or invalid pointer as negative tests when allowed"
+    if re.search(r"\bbool\b|_Bool", text):
+        return "false or true"
+    if re.search(r"\bu?int(8|16|32|64)_t\b", text):
+        bits = int(re.search(r"\bu?int(8|16|32|64)_t\b", text).group(1))
+        signed = not re.search(r"\buint", text)
+        if signed:
+            return f"{-(2 ** (bits - 1))}..{2 ** (bits - 1) - 1}"
+        return f"0..{2 ** bits - 1}"
+    if re.search(r"\bunsigned\b", text):
+        return "0..type max"
+    if re.search(r"\b(char|short|int|long|size_t|float|double)\b", text):
+        return "type-dependent numeric range; include boundary, nominal, and invalid-domain values"
+    return "unknown; infer from comparisons, comments, or requirements"
+
+
+def describe_parameter(name: str, type_text: str, direction: str) -> str:
+    if direction == "input":
+        return f"Input parameter `{name}` of type `{type_text}`."
+    if direction == "output":
+        return f"Output parameter `{name}` of type `{type_text}`."
+    return f"Input/output parameter `{name}` of type `{type_text}`."
+
+
+def return_value_info(signature: dict[str, object]) -> dict[str, object]:
+    return_type = str(signature.get("return_type", "unknown"))
+    if return_type == "void":
+        return {
+            "type": "void",
+            "direction": "none",
+            "range": "no return value",
+            "description_draft": "No return value.",
+        }
+    if return_type in {"constructor/implicit", "destructor"}:
+        return {
+            "type": return_type,
+            "direction": "constructed object/lifecycle",
+            "range": "not applicable",
+            "description_draft": "Constructor/destructor style function without an explicit return value.",
+        }
+    return {
+        "type": return_type,
+        "direction": "return",
+        "range": infer_type_range(return_type),
+        "description_draft": f"Returns `{return_type}`.",
+    }
+
+
+def output_parameters(parameters: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [param for param in parameters if param.get("direction") in {"output", "input_output"}]
+
+
 def extract_calls_from_label(label: str) -> list[str]:
     calls: list[str] = []
     pattern = re.compile(r"([A-Za-z_]\w*(?:(?:::|->|\.)\s*[A-Za-z_]\w*)*)\s*\(")
@@ -1655,6 +1810,64 @@ def draft_description(fn: Function, calls: list[str], branches: list[dict[str, o
     return "; ".join(pieces) + "."
 
 
+def test_framework_options() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "google_test",
+            "name": "GoogleTest",
+            "languages": ["C++"],
+            "best_for": "C++ unit tests with assertions, fixtures, and typed tests.",
+            "mocking": ["GoogleMock"],
+        },
+        {
+            "id": "google_test_fff",
+            "name": "GoogleTest + FFF/Fake Function Framework",
+            "aliases": ["GoogleTest + FSF", "GTest + FFF"],
+            "languages": ["C", "C++"],
+            "best_for": "Testing C modules or C-like embedded code from a C++ GoogleTest harness while faking C functions.",
+            "mocking": ["FFF"],
+        },
+        {
+            "id": "unity_cmock",
+            "name": "Unity + CMock",
+            "languages": ["C"],
+            "best_for": "Embedded C unit tests with generated mocks for hardware and OS dependencies.",
+            "mocking": ["CMock"],
+        },
+        {
+            "id": "ceedling",
+            "name": "Ceedling",
+            "languages": ["C"],
+            "best_for": "Project-managed Unity/CMock test generation and execution.",
+            "mocking": ["CMock"],
+        },
+        {
+            "id": "catch2",
+            "name": "Catch2",
+            "languages": ["C++"],
+            "best_for": "Header-friendly C++ tests with concise test cases.",
+            "mocking": ["manual fakes", "third-party mocks"],
+        },
+        {
+            "id": "doctest",
+            "name": "doctest",
+            "languages": ["C++"],
+            "best_for": "Lightweight C++ unit tests, including tests colocated with code.",
+            "mocking": ["manual fakes", "third-party mocks"],
+        },
+    ]
+
+
+def recommend_frameworks(source: Path, fn: Function, calls: list[str]) -> list[str]:
+    suffix = source.suffix.lower()
+    has_hardware_or_os_calls = any(re.match(r"(HAL_|os|PLC_|__)", call) for call in calls)
+    if suffix in {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"} or "::" in fn.name:
+        return ["google_test", "google_test_fff"] if has_hardware_or_os_calls else ["google_test", "catch2", "doctest"]
+    if has_hardware_or_os_calls:
+        return ["unity_cmock", "ceedling", "google_test_fff"]
+    return ["unity_cmock", "google_test_fff"]
+
+
 def build_analysis(
     source: Path,
     functions: list[Function],
@@ -1681,15 +1894,22 @@ def build_analysis(
         calls = calls_by_function[fn.name]
         paths = paths_by_function.get(fn.name, FunctionPaths(fn.name, []))
         path_rows = [path_to_json(idx, steps) for idx, steps in enumerate(paths.paths, 1)]
+        signature = parse_function_signature(fn.header, fn.name)
+        parameters = signature["parameters"]
         function_rows.append(
             {
                 "name": fn.name,
                 "signature": fn.header,
                 "line": fn.line,
                 "description_draft": draft_description(fn, calls, branches),
+                "return_value": return_value_info(signature),
+                "parameters": parameters,
+                "input_parameters": [param for param in parameters if param.get("direction") in {"input", "input_output"}],
+                "output_parameters": output_parameters(parameters),
                 "cyclomatic_complexity": cyclomatic_complexity(fn),
                 "calls": calls,
                 "called_by_in_file": called_by[fn.name],
+                "recommended_test_frameworks": recommend_frameworks(source, fn, calls),
                 "branches": branches,
                 "branch_path_count": len(paths.paths),
                 "paths_truncated": paths.truncated,
@@ -1709,11 +1929,12 @@ def build_analysis(
         )
 
     return {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
         "tool": "code2Flowchart",
         "source": str(source),
         "xml_validation": {"ok": xml_ok, "message": xml_message},
         "artifacts": {key: str(value) for key, value in artifacts.items()},
+        "test_framework_options": test_framework_options(),
         "functions": function_rows,
         "agent_notes": [
             "description_draft is deterministic and should be refined by an LLM before user-facing output.",
@@ -1758,7 +1979,7 @@ def write_report(
         [
             "",
             "See the generated `.paths.md` file for edge-number sequences such as `1-2-3-5`.",
-            "See the generated `.analysis.json` file for Dify/agent-friendly function analysis, branch paths, calls, complexity, and test scenarios.",
+            "See the generated `.analysis.json` file for Dify/agent-friendly function analysis, parameters, return values, branch paths, calls, complexity, test-framework options, and test scenarios.",
             "",
             "Supported constructs: if/else, for, while, do while, switch/case/default, break, continue, goto labels, return, basic C++ try/catch/throw, C stdio, and common C++ iostream calls.",
             "Limitations: heavy macros/templates, complex declarations, preprocessor-heavy code, lambdas, and unusual formatting may need manual cleanup.",

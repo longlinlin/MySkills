@@ -14,7 +14,7 @@ Use this skill to convert C/C++ control flow into visual artifacts:
 - SVG and PNG previews for quick inspection.
 - A conversion report with XML validation status, parser notes, and function path counts.
 - A `.paths.md` report listing Start-to-End edge-number sequences for each function.
-- An `.analysis.json` file for Dify/agent workflows, including function summaries, cyclomatic complexity, calls, in-file callers, branches, path sequences, and unit-test scenario hints.
+- An `.analysis.json` file for Dify/agent workflows, including function summaries, parameters, return values, output parameters, cyclomatic complexity, calls, in-file callers, branches, path sequences, test-framework options, and unit-test scenario hints.
 
 The bundled converter is intentionally lightweight. It targets readable C/C++ source files and common procedural control flow, not full compiler-grade C or C++ parsing.
 
@@ -135,15 +135,23 @@ Use `.analysis.json` as the stable bridge into Dify or a later test-generation a
 The first version includes:
 
 - `functions[].description_draft`: deterministic function description seed for LLM refinement.
+- `functions[].parameters`: parsed parameter name, type, direction, inferred range, and description draft.
+- `functions[].input_parameters`: parameters used as inputs, including input/output pointer or reference parameters.
+- `functions[].output_parameters`: pointer, reference, or array-style parameters likely to carry output or input/output data.
+- `functions[].return_value`: return type, direction, inferred range, and description draft.
 - `functions[].cyclomatic_complexity`: decision-based complexity estimate.
 - `functions[].calls`: functions or IO streams called by the function.
 - `functions[].called_by_in_file`: callers found among functions parsed in the same input file.
+- `functions[].recommended_test_frameworks`: framework IDs suitable for generating unit tests for the function.
 - `functions[].branches`: branch points with condition, source line, type, and outcomes.
 - `functions[].paths`: Start-to-End edge-number sequences with labels and conditions.
 - `functions[].unit_test_scenarios`: one scenario hint per path for branch/unit-test planning.
 - `functions[].cfg_edges`: numbered control-flow edges for traceability back to the diagram.
+- `test_framework_options`: available test frameworks such as GoogleTest, GoogleTest + FFF/Fake Function Framework, Unity/CMock, Ceedling, Catch2, and doctest.
 
 Treat the JSON as deterministic analysis input. Let the LLM generate polished function descriptions, test-case names, mock setup, and concrete unit-test code from this structure.
+
+Parameter ranges are inferred from type and pointer/reference shape only. Use requirements, comments, comparisons, or caller context to refine ranges before generating final tests.
 
 ## Path Report
 
