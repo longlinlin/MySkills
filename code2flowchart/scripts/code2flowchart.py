@@ -2149,7 +2149,13 @@ def convert(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Convert C/C++ source to an editable draw.io flowchart.")
     parser.add_argument("source", type=Path, help="Input C/C++ source file")
-    parser.add_argument("-o", "--out-dir", type=Path, default=None, help="Output directory")
+    parser.add_argument(
+        "-o",
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Output directory (defaults to this skill's output folder)",
+    )
     parser.add_argument("--name", default=None, help="Output basename without extension")
     parser.add_argument("--function", dest="function_name", help="Convert only the named function")
     parser.add_argument("--preview", action="store_true", help="Also generate a PNG preview")
@@ -2164,7 +2170,8 @@ def main(argv: list[str] | None = None) -> int:
     if not source.exists():
         print(f"Input file does not exist: {source}", file=sys.stderr)
         return 2
-    out_dir = args.out_dir or source.with_suffix("").parent / f"{source.stem}_flowchart"
+    skill_dir = Path(__file__).resolve().parent.parent
+    out_dir = args.out_dir or skill_dir / "output"
     outputs = {"drawio"}
     if args.all:
         outputs = {"drawio", "png", "svg", "mermaid", "paths", "report", "analysis"}

@@ -1,6 +1,6 @@
 ---
 name: code2flowchart
-description: Convert C and C++ source code or individual functions into clean, editable draw.io control-flow diagrams. Use for .c, .h, .cpp, .cc, .cxx, and .hpp files containing procedural logic such as if/else, loops, switch/case, break, continue, goto, return, basic exceptions, task calls, and embedded hardware calls. Prefer function-level conversion for complex code and generate previews or analysis files only when requested.
+description: Convert C and C++ source code or individual functions into clean, editable draw.io control-flow diagrams. Use for .c, .h, .cpp, .cc, .cxx, and .hpp files containing procedural logic such as if/else, loops, switch/case, break, continue, goto, return, basic exceptions, task calls, and embedded hardware calls. Prefer function-level conversion for complex code. When AI review or monitoring is requested, compare the generated diagram with source logic and write an auditable review result.
 ---
 
 # code2Flowchart
@@ -15,28 +15,30 @@ Convert C/C++ control flow into an editable `.drawio` diagram. Keep the graph re
 4. Open or inspect the `.drawio` result.
 5. Generate a PNG preview only when visual review is needed.
 6. If parsing misses important logic, isolate the function, expand relevant macros, or simplify template-heavy syntax and rerun.
+7. When AI review or monitoring is requested, run with `--preview`, inspect the diagram against the source, and write an `.ai-review.md` result in `output`.
 
 Default command:
 
 ```bash
-python code2flowchart/scripts/code2flowchart.py source.c --function target -o output
+python code2flowchart/scripts/code2flowchart.py source.c --function target
 ```
 
-The default output is only `source.drawio`.
+The default output is only `source.drawio`, written to the skill's `output` folder. Use `-o` or `--out-dir` to override that destination.
 
 Optional outputs:
 
 ```bash
 # Add a PNG preview
-python code2flowchart/scripts/code2flowchart.py source.c --preview -o output
+python code2flowchart/scripts/code2flowchart.py source.c --preview
 
 # Generate every legacy artifact for debugging or downstream analysis
-python code2flowchart/scripts/code2flowchart.py source.c --all -o output
+python code2flowchart/scripts/code2flowchart.py source.c --all
 ```
 
 Available flags:
 
 - `--function NAME`: convert only the named function.
+- `-o DIR` / `--out-dir DIR`: override the default `output` folder.
 - `--preview`: add a PNG preview.
 - `--svg`: add an SVG preview.
 - `--mermaid`: add the Mermaid intermediate file.
@@ -84,6 +86,18 @@ The bundled parser is intentionally lightweight and is not a compiler-verified C
 - Visually inspect branch merges, loop exits, switch fallthrough, goto targets, and terminating calls.
 - Do not treat XML validation as semantic validation.
 - If no function is parsed, do not accept the empty Start-to-End diagram as a successful conversion.
+
+## AI review and monitoring
+
+When the user requests AI review, do not only confirm XML validity. Compare the source control flow with the generated diagram, inspect the PNG preview, and record the result as `output/<name>.ai-review.md`.
+
+- Verify every decision outcome, loop entry/back/exit, break/continue, return/throw/goto, and relevant terminal call.
+- Verify that meaningful calls and cleanup steps remain visible.
+- Flag unsupported syntax, uncertain semantics, missing paths, misleading exits, clipped labels, crossings, or unreadable layouts.
+- Mark the result `PASS`, `WARNING`, or `FAIL`; never claim compiler-verified semantics.
+- Return the review findings and artifact links to the user.
+
+Read [references/ai-flowchart-review.md](references/ai-flowchart-review.md) before conducting an AI review.
 
 ## Optional analysis
 
