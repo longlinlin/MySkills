@@ -22,6 +22,7 @@ Use this reference when adjusting the converter or manually reviewing generated 
 - Standalone or complex `break` and `continue`: highlighted rounded rectangle.
 - `goto`: highlighted process node.
 - Label such as `__end:`: dashed rounded rectangle.
+- Multi-branch merge: a small filled connector circle.
 
 ## Edges
 
@@ -37,6 +38,7 @@ Use this reference when adjusting the converter or manually reviewing generated 
 - Route `break` and `goto` exit edges on staggered right-side channels.
 - Stagger side channels horizontally so two exit lines never share the exact same vertical segment.
 - Merge simple break/continue edges above the next ordinary node, then enter that node through the top center.
+- Merge switch-case exits through one connector before entering the next ordinary node.
 - Reserve vertical whitespace after loops with break exits to keep merge lines away from process boxes.
 - Include all edge waypoints in preview bounds so long side routes and labels are not clipped.
 - Avoid crossing branch edges by placing then/yes branches to the left and else/no branches to the right.
@@ -51,15 +53,17 @@ Use this reference when adjusting the converter or manually reviewing generated 
 - `else`: do not create a separate decision. Treat it as the `no` branch of the preceding `if`.
 - `else if`: represent as a second diamond on the `no` side of the previous `if`.
 - `for`: use a diamond for the loop condition/header. `yes` enters the body; normal body exit and `continue` route back to the loop diamond; `no` exits to the next statement.
+- Infinite `for (;;)` / `while (1)` / `while (true)`: keep the loop node but do not draw a false/no exit. Route only a real terminating statement to End.
 - `while`: same as `for`, but the condition diamond appears before the body.
 - `do while`: draw the body first, then the condition diamond. `yes` loops back to the body; `no` exits.
-- `switch`: use one diamond. Each `case` and `default` is an outgoing branch. Case bodies should align horizontally under the switch, then merge after `break` or normal completion.
+- `switch`: use one diamond. Each meaningful case body is an outgoing branch. Remove a top-level trailing `break` instead of drawing a break node. Combine cases with no action into one labeled branch, add `no match` when no `default` exists, align case bodies horizontally, and merge them through one connector.
 - `break`: exits the nearest loop or switch and connects to the statement after that construct.
 - `continue`: connects to the nearest loop condition/update.
 - `goto`: connects directly to the matching label and does not fall through to the next statement.
 - Label: acts as a merge point, then continues downward through cleanup or subsequent statements.
 - `return`: connects directly to the function End and does not merge into later statements.
 - `throw`: connects directly to End unless a local `catch` branch is modeled.
+- Known non-returning calls such as `exit`, `abort`, and `osThreadTerminate` connect to End with a `terminate` edge. Review `osThreadTerminate` when it may target another thread and return.
 - `try/catch`: draw the try body as normal flow and each catch as a labeled side branch. Keep catch branches orthogonal and merge after the catch body when execution can continue.
 
 ## Semantics
@@ -68,6 +72,7 @@ Use this reference when adjusting the converter or manually reviewing generated 
 - `break` exits the nearest loop or switch.
 - `continue` returns to the nearest loop condition/update.
 - `switch` cases are visual branches. Fallthrough can be ambiguous; review generated case exits manually when a case does not contain `break` or `return`.
+- An infinite loop has no normal path to End. End is reachable only through return, throw, terminating calls, or another explicit exit modeled by the source.
 
 ## C++ Notes
 

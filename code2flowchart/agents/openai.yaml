@@ -1,4 +1,4 @@
 interface:
   display_name: "code2Flowchart"
-  short_description: "Convert C/C++ control flow into draw.io diagrams."
-  default_prompt: "Use $code2flowchart to convert this C or C++ source file into a draw.io flowchart with SVG and PNG previews."
+  short_description: "Convert C/C++ functions into clean draw.io flowcharts."
+  default_prompt: "Use $code2flowchart to convert this C or C++ function into a clean editable draw.io flowchart; add a preview only when requested."

@@ -37,12 +37,13 @@ Use this structure for `startTest`:
 
 Use this structure for `commtest`:
 
-1. Start infinite loop `for (;;)`.
+1. Start infinite loop `for (;;)` without a false/no exit edge.
 2. Decision: `switch (type)`.
-3. One branch per `TESTREG_*` case.
-4. Case body calls the matching test routine, then `break`.
-5. After switch: reset register, clear flag, terminate task.
-6. Route the infinite-loop back edge on the left.
+3. Use one branch per test routine and combine cases that perform no call into one `No test call` branch.
+4. Omit top-level trailing `break` nodes and merge case exits through one connector.
+5. Add `no match` when the switch has no `default` case.
+6. After switch: reset register, clear flag, terminate task.
+7. Connect `osThreadTerminate` to End with a `terminate` edge when it terminates the current task; otherwise route its normal return back to the loop.
 
 ### Retry Loop With Cleanup
 

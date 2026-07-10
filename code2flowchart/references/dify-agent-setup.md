@@ -8,7 +8,7 @@ Keep deterministic code analysis outside the LLM, then feed the structured resul
 
 1. User inputs a C/C++ function, source file, or project snippet.
 2. A wrapper service runs `scripts/code2flowchart.py`.
-3. The service returns `.analysis.json` plus artifact links for `.drawio`, `.svg`, `.png`, `.mmd`, `.paths.md`, and `.report.md`.
+3. The service returns `.analysis.json` plus the `.drawio` link. Return preview, Mermaid, path, or report links only when explicitly requested.
 4. Dify uses `.analysis.json` to generate the function description, cyclomatic-complexity explanation, branch test plan, mock plan, and unit-test code.
 5. A final Dify answer node returns the report and artifact links.
 
@@ -48,11 +48,7 @@ Response body:
   "ok": true,
   "analysis": {},
   "artifacts": {
-    "drawio": "https://example/artifacts/demo.drawio",
-    "svg": "https://example/artifacts/demo.svg",
-    "png": "https://example/artifacts/demo.png",
-    "paths": "https://example/artifacts/demo.paths.md",
-    "report": "https://example/artifacts/demo.report.md"
+    "drawio": "https://example/artifacts/demo.drawio"
   },
   "errors": []
 }

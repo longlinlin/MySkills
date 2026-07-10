@@ -100,6 +100,15 @@ IO_NAMES = {
     "std::clog",
 }
 
+TERMINATING_CALL_NAMES = {
+    "abort",
+    "exit",
+    "_Exit",
+    "quick_exit",
+    "std::terminate",
+    "osThreadTerminate",
+}
+
 
 @dataclass
 class Token:
@@ -488,7 +497,12 @@ class CParser:
         parts = self.read_until(";")
         self.consume(";")
         label = compact_tokens(parts)
-        kind = "io" if is_io_label(label) else "expr"
+        if is_io_label(label):
+            kind = "io"
+        elif is_terminating_call(label):
+            kind = "terminate"
+        else:
+            kind = "expr"
         return Statement(kind, label=label, line=line)
 
     def read_parenthesized(self) -> str:
@@ -675,6 +689,11 @@ def is_io_label(label: str) -> bool:
     return bool(re.search(r"\b(std::)?(cin|cout|cerr|clog)\b", label))
 
 
+def is_terminating_call(label: str) -> bool:
+    names = "|".join(re.escape(name) for name in sorted(TERMINATING_CALL_NAMES, key=len, reverse=True))
+    return bool(re.search(r"(?:^|\s)(?:" + names + r")\s*\(", label))
+
+
 class FlowGraph:
     def __init__(self) -> None:
         self.nodes: list[Node] = []
@@ -719,6 +738,8 @@ class FlowGraph:
 
 
 def size_for(kind: str, label: str) -> tuple[float, float]:
+    if kind == "merge":
+        return 14, 14
     width = max(130, min(300, 9 * max_line_len(label) + 34))
     if kind in {"decision", "switch"}:
         return max(width, 170), 86
@@ -761,6 +782,17 @@ def single_jump_statement(statements: list[Statement]) -> Statement | None:
     return None
 
 
+def is_infinite_loop(label: str) -> bool:
+    compact = re.sub(r"\s+", "", label).lower()
+    return compact in {"for(;;)", "while(1)", "while(true)"}
+
+
+def without_trailing_break(statements: list[Statement]) -> tuple[list[Statement], bool]:
+    if statements and statements[-1].kind == "break":
+        return statements[:-1], True
+    return statements, False
+
+
 class FlowBuilder:
     X_GAP = 260
     Y_GAP = 120
@@ -801,6 +833,11 @@ class FlowBuilder:
             node = self.g.add_node(stmt.kind, stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
             return [ExitRef(node)], y + self.Y_GAP
+        if stmt.kind == "terminate":
+            node = self.g.add_node("expr", stmt.label, x, y, self.function)
+            self.g.connect(incoming, node)
+            self.g.add_edge(node, self.end_id, "terminate")
+            return [ExitRef(node, kind="terminate")], y + self.Y_GAP
         if stmt.kind == "return":
             node = self.g.add_node("return", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
@@ -882,8 +919,12 @@ class FlowBuilder:
     ) -> tuple[list[ExitRef], float]:
         cond = self.g.add_node("decision", stmt.label, x, y, self.function)
         self.g.connect(incoming, cond)
-        body_exits, body_y = self.build_sequence(stmt.body, [ExitRef(cond, "yes")], x, y + self.Y_GAP)
-        after_loop = [ExitRef(cond, "no")]
+        infinite = is_infinite_loop(stmt.label)
+        enter_label = "enter" if infinite else "yes"
+        body_exits, body_y = self.build_sequence(
+            stmt.body, [ExitRef(cond, enter_label)], x, y + self.Y_GAP
+        )
+        after_loop = [] if infinite else [ExitRef(cond, "no")]
         has_break_exit = False
         for ref in body_exits:
             if ref.kind in {"normal", "continue"}:
@@ -923,20 +964,63 @@ class FlowBuilder:
         self.g.connect(incoming, sw)
         if not stmt.cases:
             return [ExitRef(sw)], y + self.Y_GAP
-        exits: list[ExitRef] = []
+        merge_sources: list[ExitRef] = []
+        carried: list[ExitRef] = []
+        direct_labels: list[str] = []
         case_count = len(stmt.cases)
         start_x = x - self.X_GAP * (case_count - 1) / 2
         max_y = y + self.Y_GAP
+        has_default = False
+        pending_labels: list[str] = []
         for idx, (case_label, body) in enumerate(stmt.cases):
+            has_default = has_default or case_label == "default"
+            body_without_break, trailing_break = without_trailing_break(body)
+            labels = pending_labels + [case_label]
+            if not body and not trailing_break:
+                pending_labels = labels
+                continue
+            pending_labels = []
+            branch_label = " / ".join(labels)
             case_x = start_x + idx * self.X_GAP
-            case_exits, case_y = self.build_sequence(body, [ExitRef(sw, case_label)], case_x, y + self.Y_GAP)
+            case_exits, case_y = self.build_sequence(
+                body_without_break,
+                [ExitRef(sw, branch_label)],
+                case_x,
+                y + self.Y_GAP,
+            )
             for ref in case_exits:
-                if ref.kind == "break":
-                    exits.append(ExitRef(ref.node_id, "break"))
+                if ref.kind in {"normal", "break"}:
+                    if ref.node_id == sw:
+                        direct_labels.append(ref.label)
+                    else:
+                        merge_sources.append(ExitRef(ref.node_id))
                 else:
-                    exits.append(ref)
+                    carried.append(ref)
             max_y = max(max_y, case_y)
-        return exits, max_y + 20
+        if pending_labels:
+            direct_labels.append(" / ".join(pending_labels))
+        if not has_default:
+            direct_labels.append("no match")
+
+        if direct_labels:
+            display_labels = [
+                label.removeprefix("case ") for label in direct_labels
+            ]
+            direct_x = start_x
+            direct_node = self.g.add_node(
+                "expr",
+                "No case action: " + " / ".join(display_labels),
+                direct_x,
+                y + self.Y_GAP,
+                self.function,
+            )
+            self.g.add_edge(sw, direct_node, "no action")
+            merge_sources.append(ExitRef(direct_node))
+            max_y = max(max_y, self.g.node(direct_node).y + self.g.node(direct_node).h + 20)
+        merge_y = max_y + 25
+        merge = self.g.add_node("merge", "", x, merge_y, self.function)
+        self.g.connect(merge_sources, merge)
+        return [ExitRef(merge)] + carried, merge_y + self.Y_GAP / 2
 
     def build_try(
         self, stmt: Statement, incoming: list[ExitRef], x: float, y: float
@@ -1000,6 +1084,8 @@ def write_mermaid(graph: FlowGraph, path: Path) -> None:
         label = mermaid_escape(node.label)
         if node.kind in {"terminator", "return"}:
             lines.append(f"    {node.id}([{label}])")
+        elif node.kind == "merge":
+            lines.append(f"    {node.id}(( ))")
         elif node.kind in {"decision", "switch"}:
             lines.append(f"    {node.id}{{{label}}}")
         elif node.kind == "io":
@@ -1095,6 +1181,8 @@ def write_drawio(graph: FlowGraph, path: Path) -> None:
 
 
 def drawio_style(kind: str) -> str:
+    if kind == "merge":
+        return "ellipse;whiteSpace=wrap;html=1;fillColor=#333333;strokeColor=#333333;"
     if kind in {"terminator", "return"}:
         return "ellipse;whiteSpace=wrap;html=1;"
     if kind in {"decision", "switch"}:
@@ -1171,7 +1259,9 @@ def svg_node(node: Node) -> str:
     elif node.kind in {"break", "continue"}:
         fill = "#fff2cc"
         stroke = "#d6b656"
-    if node.kind in {"terminator", "return"}:
+    if node.kind == "merge":
+        shape = f'<ellipse cx="{node.x:.1f}" cy="{y + node.h / 2:.1f}" rx="{node.w / 2:.1f}" ry="{node.h / 2:.1f}" fill="#333333" stroke="#333333"/>'
+    elif node.kind in {"terminator", "return"}:
         shape = f'<ellipse cx="{node.x:.1f}" cy="{y + node.h / 2:.1f}" rx="{node.w / 2:.1f}" ry="{node.h / 2:.1f}" fill="{fill}" stroke="{stroke}"/>'
     elif node.kind in {"decision", "switch"}:
         pts = f"{node.x:.1f},{y:.1f} {x + node.w:.1f},{y + node.h / 2:.1f} {node.x:.1f},{y + node.h:.1f} {x:.1f},{y + node.h / 2:.1f}"
@@ -1275,6 +1365,8 @@ def route_side(graph: FlowGraph, edge: Edge) -> int:
 def edge_label_point(graph: FlowGraph, edge: Edge, points: list[tuple[float, float]]) -> tuple[float, float]:
     if side_routed_edge(graph, edge) or edge.backward:
         return points[1]
+    if graph.node(edge.target).kind == "merge":
+        return points[1]
     return points[len(points) // 2]
 
 
@@ -1355,7 +1447,9 @@ def draw_png_node(draw, font, node: Node, pt, scale: float) -> None:
     elif node.kind in {"break", "continue"}:
         fill = (255, 242, 204)
         outline = (214, 182, 86)
-    if node.kind in {"terminator", "return"}:
+    if node.kind == "merge":
+        draw.ellipse((x1, y1, x2, y2), fill=(51, 51, 51), outline=(51, 51, 51), width=1)
+    elif node.kind in {"terminator", "return"}:
         draw.ellipse((x1, y1, x2, y2), fill=fill, outline=outline, width=2)
     elif node.kind in {"decision", "switch"}:
         draw.polygon([(cx, y1), (x2, cy), (cx, y2), (x1, cy)], fill=fill, outline=outline)
@@ -1954,6 +2048,7 @@ def write_report(
     ok: bool,
     message: str,
     function_paths: list[FunctionPaths],
+    generated: set[str],
 ) -> None:
     lines = [
         "# code2Flowchart conversion report",
@@ -1975,11 +2070,12 @@ def write_report(
             lines.append(f"- {item.function}: {len(item.paths)}{suffix} Start-to-End paths")
     else:
         lines.append("- None.")
+    if "paths" in generated:
+        lines.extend(["", "See the generated `.paths.md` file for edge-number sequences such as `1-2-3-5`."])
+    if "analysis" in generated:
+        lines.extend(["", "See the generated `.analysis.json` file for structured function analysis and test-planning data."])
     lines.extend(
         [
-            "",
-            "See the generated `.paths.md` file for edge-number sequences such as `1-2-3-5`.",
-            "See the generated `.analysis.json` file for Dify/agent-friendly function analysis, parameters, return values, branch paths, calls, complexity, test-framework options, and test scenarios.",
             "",
             "Supported constructs: if/else, for, while, do while, switch/case/default, break, continue, goto labels, return, basic C++ try/catch/throw, C stdio, and common C++ iostream calls.",
             "Limitations: heavy macros/templates, complex declarations, preprocessor-heavy code, lambdas, and unusual formatting may need manual cleanup.",
@@ -1988,12 +2084,27 @@ def write_report(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def convert(source: Path, out_dir: Path, basename: str | None = None) -> dict[str, Path]:
+def convert(
+    source: Path,
+    out_dir: Path,
+    basename: str | None = None,
+    outputs: set[str] | None = None,
+    function_name: str | None = None,
+) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     name = basename or source.stem
     functions = parse_source(source)
+    if not functions:
+        raise ValueError("No complete function definitions were parsed from the source file")
+    if function_name:
+        functions = [
+            fn for fn in functions
+            if fn.name == function_name or base_function_name(fn.name) == function_name
+        ]
+        if not functions:
+            raise ValueError(f"Function not found: {function_name}")
     graph = build_graph(functions)
-    paths = {
+    all_paths = {
         "mermaid": out_dir / f"{name}.mmd",
         "drawio": out_dir / f"{name}.drawio",
         "svg": out_dir / f"{name}.svg",
@@ -2002,33 +2113,76 @@ def convert(source: Path, out_dir: Path, basename: str | None = None) -> dict[st
         "report": out_dir / f"{name}.report.md",
         "analysis": out_dir / f"{name}.analysis.json",
     }
-    write_mermaid(graph, paths["mermaid"])
-    write_drawio(graph, paths["drawio"])
-    write_svg(graph, paths["svg"])
-    write_png(graph, paths["png"])
-    function_paths = enumerate_function_paths(graph)
-    write_paths_report(paths["paths"], function_paths)
-    ok, message = validate_drawio(paths["drawio"])
-    write_report(paths["report"], functions, ok, message, function_paths)
-    write_analysis(paths["analysis"], build_analysis(source, functions, graph, function_paths, paths, ok, message))
+    requested = set(outputs or {"drawio"})
+    requested.add("drawio")
+    unknown = requested - set(all_paths)
+    if unknown:
+        raise ValueError(f"Unknown output types: {', '.join(sorted(unknown))}")
+    paths = {key: all_paths[key] for key in all_paths if key in requested}
+
+    write_drawio(graph, all_paths["drawio"])
+    if "mermaid" in requested:
+        write_mermaid(graph, all_paths["mermaid"])
+    if "svg" in requested:
+        write_svg(graph, all_paths["svg"])
+    if "png" in requested:
+        write_png(graph, all_paths["png"])
+
+    needs_paths = bool(requested & {"paths", "report", "analysis"})
+    function_paths = enumerate_function_paths(graph) if needs_paths else []
+    if "paths" in requested:
+        write_paths_report(all_paths["paths"], function_paths)
+
+    ok, message = validate_drawio(all_paths["drawio"])
+    if "report" in requested:
+        write_report(all_paths["report"], functions, ok, message, function_paths, requested)
+    if "analysis" in requested:
+        write_analysis(
+            all_paths["analysis"],
+            build_analysis(source, functions, graph, function_paths, paths, ok, message),
+        )
     if not ok:
         raise RuntimeError(message)
     return paths
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Convert C/C++ source to Mermaid, draw.io XML, SVG, and PNG.")
+    parser = argparse.ArgumentParser(description="Convert C/C++ source to an editable draw.io flowchart.")
     parser.add_argument("source", type=Path, help="Input C/C++ source file")
     parser.add_argument("-o", "--out-dir", type=Path, default=None, help="Output directory")
     parser.add_argument("--name", default=None, help="Output basename without extension")
+    parser.add_argument("--function", dest="function_name", help="Convert only the named function")
+    parser.add_argument("--preview", action="store_true", help="Also generate a PNG preview")
+    parser.add_argument("--svg", action="store_true", help="Also generate an SVG preview")
+    parser.add_argument("--mermaid", action="store_true", help="Also generate Mermaid text")
+    parser.add_argument("--paths", action="store_true", help="Also generate the path report")
+    parser.add_argument("--report", action="store_true", help="Also generate the conversion report")
+    parser.add_argument("--analysis", action="store_true", help="Also generate analysis JSON")
+    parser.add_argument("--all", action="store_true", help="Generate every supported artifact")
     args = parser.parse_args(argv)
     source = args.source
     if not source.exists():
         print(f"Input file does not exist: {source}", file=sys.stderr)
         return 2
     out_dir = args.out_dir or source.with_suffix("").parent / f"{source.stem}_flowchart"
+    outputs = {"drawio"}
+    if args.all:
+        outputs = {"drawio", "png", "svg", "mermaid", "paths", "report", "analysis"}
+    else:
+        if args.preview:
+            outputs.add("png")
+        if args.svg:
+            outputs.add("svg")
+        if args.mermaid:
+            outputs.add("mermaid")
+        if args.paths:
+            outputs.add("paths")
+        if args.report:
+            outputs.add("report")
+        if args.analysis:
+            outputs.add("analysis")
     try:
-        paths = convert(source, out_dir, args.name)
+        paths = convert(source, out_dir, args.name, outputs, args.function_name)
     except Exception as exc:
         print(f"Conversion failed: {exc}", file=sys.stderr)
         return 1
