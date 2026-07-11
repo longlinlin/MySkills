@@ -4,6 +4,12 @@ Convert C/C++ source code into Mermaid, draw.io XML, SVG, and PNG flowchart prev
 
 The parser is intentionally lightweight. It targets teaching/lab-style C/C++ code and
 the most common control-flow constructs rather than full ISO C or C++ grammar.
+
+Companion scripts (in the same directory):
+  validate.py           — structural linter for .drawio files
+  repair_png.py         — repair truncated IEND in draw.io CLI -e PNG exports
+  encode_drawio_url.py  — encode .drawio XML into a diagrams.net browser URL
+  lang_support.py       — multi-language extraction framework
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 import textwrap
 import zlib
@@ -152,6 +159,8 @@ class Edge:
     target: str
     label: str = ""
     backward: bool = False
+    route_side: int = 0
+    route_lane: int = 0
 
 
 @dataclass
@@ -496,10 +505,15 @@ class CParser:
         line = self.current().line
         parts = self.read_until(";")
         self.consume(";")
-        label = compact_tokens(parts)
-        if is_io_label(label):
+        raw_label = compact_tokens(parts)
+        label = display_flow_label(raw_label)
+        if re.match(r"^TRACE_ERROR\s*\(", raw_label):
+            kind = "expr"
+        elif re.match(r"^TRACE_(?:INFO|WARN)\s*\(", raw_label):
+            kind = "trace"
+        elif is_io_label(raw_label):
             kind = "io"
-        elif is_terminating_call(label):
+        elif is_terminating_call(raw_label):
             kind = "terminate"
         else:
             kind = "expr"
@@ -643,8 +657,8 @@ def compact_tokens(tokens: Iterable[Token]) -> str:
     if not raw:
         return ""
     out = ""
-    no_space_before = {")", "]", "}", ";", ",", ":", "::", "++", "--"}
-    no_space_after = {"(", "[", "{", ".", "->", "::", "++", "--", "!", "~"}
+    no_space_before = {")", "]", "}", ";", ",", ":", "::", "++", "--", "[", ".", "->"}
+    no_space_after = {"(", "[", "{", ".", "->", "::", "++", "--", "!", "~", "&"}
     operators = {
         "=",
         "+",
@@ -694,6 +708,76 @@ def is_terminating_call(label: str) -> bool:
     return bool(re.search(r"(?:^|\s)(?:" + names + r")\s*\(", label))
 
 
+def display_flow_label(label: str) -> str:
+    """Keep process nodes readable without changing the modeled control flow."""
+    trace = re.match(
+        r'^(TRACE_(?:INFO|WARN|ERROR))\s*\(\s*"[^"]*"\s*,\s*"([^"]*)"',
+        label,
+    )
+    if trace:
+        level, message = trace.groups()
+        message = message.replace("\\r", "").replace("\\n", "")
+        message = re.sub(r"%[-+ #0]*\d*(?:\.\d+)?(?:hh|h|ll|l|j|z|t|L)?[diuoxXfFeEgGaAcsp]", "[value]", message)
+        message = re.sub(r"\s+", " ", message).strip()
+        if level == "TRACE_ERROR" and "FAIL after" in message:
+            return "ERROR: Apply failed after retry limit"
+        return f"{level}: {message}"
+
+    assignment_call = re.match(
+        r"^(?P<lhs>.+?\s*(?<![=!<>])=(?!=)\s*)(?P<call>[A-Za-z_]\w*(?:::\w+)*)\s*\(",
+        label,
+    )
+    if assignment_call:
+        return f"{assignment_call.group('lhs')}{assignment_call.group('call')}(...)"
+    direct_call = re.match(r"^(?P<call>[A-Za-z_]\w*(?:::\w+)*)\s*\(", label)
+    if direct_call:
+        return f"{direct_call.group('call')}(...)"
+    return label
+
+
+def is_setup_statement(stmt: Statement) -> bool:
+    """Return whether a plain expression is a declaration or state update."""
+    if stmt.kind != "expr":
+        return False
+    label = stmt.label.strip()
+    if not label:
+        return False
+    if re.search(r"(?:\+\+|--|(?<![=!<>])=(?!=)|\+=|-=|\*=|/=)", label):
+        return True
+    # Includes project-specific declarations such as U8, S32, and
+    # Charge_PortStatus, without treating an ordinary function call as one.
+    return bool(re.match(r"^[A-Za-z_]\w*(?:\s*::\s*\w+)?(?:\s+\w+|\s*\*)", label)) and "(" not in label
+
+
+def collapse_setup_statements(statements: list[Statement]) -> list[Statement]:
+    """Collapse consecutive declarations/assignments into a single setup node."""
+    result: list[Statement] = []
+    pending: list[Statement] = []
+
+    def flush() -> None:
+        nonlocal pending
+        if len(pending) == 1:
+            result.append(pending[0])
+        elif pending:
+            result.append(
+                Statement(
+                    "expr",
+                    label="\n".join(stmt.label for stmt in pending),
+                    line=pending[0].line,
+                )
+            )
+        pending = []
+
+    for stmt in statements:
+        if is_setup_statement(stmt):
+            pending.append(stmt)
+        else:
+            flush()
+            result.append(stmt)
+    flush()
+    return result
+
+
 class FlowGraph:
     def __init__(self) -> None:
         self.nodes: list[Node] = []
@@ -740,32 +824,38 @@ class FlowGraph:
 def size_for(kind: str, label: str) -> tuple[float, float]:
     if kind == "merge":
         return 14, 14
-    width = max(130, min(300, 9 * max_line_len(label) + 34))
+    lines = node_label_lines(kind, label)
+    width = max(130, 8 * max((len(line) for line in lines), default=8) + 34)
     if kind in {"decision", "switch"}:
-        return max(width, 170), 86
+        return max(width, 220), max(86, 22 * len(lines) + 28)
     if kind in {"terminator", "return"}:
-        return max(120, min(240, width)), 62
+        return max(120, width), 62
     if kind == "io":
-        return max(width, 170), 62
+        return max(width, 170), max(62, 22 * len(lines) + 18)
     if kind == "function":
         return max(width, 180), 44
     if kind == "label":
         return max(width, 130), 44
-    return width, max(54, 22 * len(wrap_label(label, 28)) + 18)
+    return width, max(54, 22 * len(lines) + 18)
 
 
-def max_line_len(label: str) -> int:
-    return max((len(line) for line in wrap_label(label, 32)), default=8)
-
-
-def wrap_label(label: str, width: int = 28) -> list[str]:
-    text = re.sub(r"\s+", " ", label.strip())
-    if not text:
-        return [""]
+def wrap_label(label: str, width: int | None = None) -> list[str]:
+    raw_lines = label.strip().splitlines() or [""]
     lines: list[str] = []
-    for segment in text.split("\\n"):
-        lines.extend(textwrap.wrap(segment, width=width, break_long_words=True) or [""])
-    return lines[:6]
+    for segment in raw_lines:
+        text = re.sub(r"\s+", " ", segment.strip())
+        if width is None:
+            lines.append(text)
+        else:
+            lines.extend(textwrap.wrap(text, width=width, break_long_words=True) or [""])
+    return lines or [""]
+
+
+def node_label_lines(kind: str, label: str) -> list[str]:
+    # Process nodes preserve complete C statements and grow to fit them. Only
+    # decisions are wrapped so their diamond shape remains legible.
+    width = 44 if kind in {"decision", "switch"} else None
+    return wrap_label(label, width)
 
 
 def goto_target(label: str) -> str:
@@ -793,18 +883,46 @@ def without_trailing_break(statements: list[Statement]) -> tuple[list[Statement]
     return statements, False
 
 
+def statement_descendants(statements: list[Statement]) -> Iterable[Statement]:
+    for stmt in statements:
+        yield stmt
+        yield from statement_descendants(stmt.body)
+        yield from statement_descendants(stmt.else_body)
+        for _, case_body in stmt.cases:
+            yield from statement_descendants(case_body)
+
+
+def complex_retry_loop_return(statements: list[Statement]) -> Statement | None:
+    """Return the success return for a deeply nested retry loop, if present."""
+    descendants = list(statement_descendants(statements))
+    has_nested_loop = any(stmt.kind in {"for", "while", "do_while"} for stmt in descendants)
+    if not has_nested_loop:
+        return None
+    return next((stmt for stmt in descendants if stmt.kind == "return"), None)
+
+
 class FlowBuilder:
     X_GAP = 260
     Y_GAP = 120
 
-    def __init__(self, graph: FlowGraph, end_id: str, function: str) -> None:
+    def __init__(
+        self, graph: FlowGraph, end_id: str, function: str, detail_level: str = "standard"
+    ) -> None:
         self.g = graph
         self.end_id = end_id
         self.function = function
+        self.detail_level = detail_level
+
+    def next_y_after(self, node_id: str) -> float:
+        node = self.g.node(node_id)
+        # Keep the established vertical rhythm for ordinary nodes, while
+        # reserving extra space for wrapped labels such as TRACE_INFO calls.
+        return node.y + max(self.Y_GAP, node.h + 60)
 
     def build_sequence(
         self, statements: list[Statement], incoming: list[ExitRef], x: float, y: float
     ) -> tuple[list[ExitRef], float]:
+        statements = collapse_setup_statements(statements)
         normal = [ref for ref in incoming if ref.kind == "normal"]
         carried: list[ExitRef] = [ref for ref in incoming if ref.kind != "normal"]
         cur_y = y
@@ -819,6 +937,8 @@ class FlowBuilder:
                         remaining.append(ref)
                 carried = remaining
                 normal = normal + matched
+            if len(normal) > 1:
+                normal, cur_y = self.merge_normal_exits(normal, x, cur_y)
             exits, cur_y = self.build_statement(stmt, normal, x, cur_y)
             normal = [e for e in exits if e.kind == "normal"]
             carried.extend(e for e in exits if e.kind != "normal")
@@ -826,41 +946,57 @@ class FlowBuilder:
                 cur_y += self.Y_GAP / 2
         return normal + carried, cur_y
 
+    def merge_normal_exits(
+        self, incoming: list[ExitRef], x: float, y: float
+    ) -> tuple[list[ExitRef], float]:
+        """Merge branch fall-throughs before resuming the dominant spine."""
+        source_bottom = max(
+            self.g.node(ref.node_id).y + self.g.node(ref.node_id).h for ref in incoming
+        )
+        merge_y = max(y - 55, source_bottom + 25)
+        merge = self.g.add_node("merge", "", x, merge_y, self.function)
+        self.g.connect(incoming, merge)
+        return [ExitRef(merge)], max(y, merge_y + 45)
+
     def build_statement(
         self, stmt: Statement, incoming: list[ExitRef], x: float, y: float
     ) -> tuple[list[ExitRef], float]:
+        if stmt.kind == "trace":
+            # Logging does not alter local control flow. Keeping every verbose
+            # TRACE macro as a node overwhelms nested retry diagrams.
+            return incoming, y
         if stmt.kind in {"expr", "io"}:
             node = self.g.add_node(stmt.kind, stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
-            return [ExitRef(node)], y + self.Y_GAP
+            return [ExitRef(node)], self.next_y_after(node)
         if stmt.kind == "terminate":
             node = self.g.add_node("expr", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
             self.g.add_edge(node, self.end_id, "terminate")
-            return [ExitRef(node, kind="terminate")], y + self.Y_GAP
+            return [ExitRef(node, kind="terminate")], self.next_y_after(node)
         if stmt.kind == "return":
             node = self.g.add_node("return", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
             self.g.add_edge(node, self.end_id, "return")
-            return [ExitRef(node, kind="return")], y + self.Y_GAP
+            return [ExitRef(node, kind="return")], self.next_y_after(node)
         if stmt.kind == "throw":
             node = self.g.add_node("return", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
             self.g.add_edge(node, self.end_id, "throw")
-            return [ExitRef(node, kind="throw")], y + self.Y_GAP
+            return [ExitRef(node, kind="throw")], self.next_y_after(node)
         if stmt.kind == "goto":
             node = self.g.add_node("goto", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
             target = goto_target(stmt.label)
-            return [ExitRef(node, kind=f"goto:{target}" if target else "goto")], y + self.Y_GAP
+            return [ExitRef(node, kind=f"goto:{target}" if target else "goto")], self.next_y_after(node)
         if stmt.kind == "label":
             node = self.g.add_node("label", f"{stmt.label}:", x, y, self.function)
             self.g.connect(incoming, node)
-            return [ExitRef(node)], y + self.Y_GAP
+            return [ExitRef(node)], self.next_y_after(node)
         if stmt.kind in {"break", "continue"}:
             node = self.g.add_node(stmt.kind, stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
-            return [ExitRef(node, kind=stmt.kind)], y + self.Y_GAP
+            return [ExitRef(node, kind=stmt.kind)], self.next_y_after(node)
         if stmt.kind == "if":
             return self.build_if(stmt, incoming, x, y)
         if stmt.kind in {"while", "for"}:
@@ -873,7 +1009,7 @@ class FlowBuilder:
             return self.build_try(stmt, incoming, x, y)
         node = self.g.add_node("expr", stmt.label or stmt.kind, x, y, self.function)
         self.g.connect(incoming, node)
-        return [ExitRef(node)], y + self.Y_GAP
+        return [ExitRef(node)], self.next_y_after(node)
 
     def build_if(
         self, stmt: Statement, incoming: list[ExitRef], x: float, y: float
@@ -902,9 +1038,17 @@ class FlowBuilder:
                 ExitRef(cond, f"yes {simple_then_jump.kind}", kind=simple_then_jump.kind),
                 ExitRef(cond, f"no {simple_else_jump.kind}", kind=simple_else_jump.kind),
             ], y + self.Y_GAP
-        branch_y = y + self.Y_GAP
+        branch_y = self.next_y_after(cond)
+        if not stmt.body and stmt.else_body:
+            else_exits, else_y = self.build_sequence(
+                stmt.else_body, [ExitRef(cond, "no")], x, branch_y
+            )
+            return [ExitRef(cond, "yes")] + else_exits, max(else_y, branch_y) + 20
+        # Keep a one-sided if on the vertical spine. Reserve left/right
+        # placement only when an else branch needs its own column.
+        then_x = x - self.X_GAP / 2 if stmt.else_body else x
         then_exits, then_y = self.build_sequence(
-            stmt.body, [ExitRef(cond, "yes")], x - self.X_GAP / 2, branch_y
+            stmt.body, [ExitRef(cond, "yes")], then_x, branch_y
         )
         if stmt.else_body:
             else_exits, else_y = self.build_sequence(
@@ -917,43 +1061,107 @@ class FlowBuilder:
     def build_loop(
         self, stmt: Statement, incoming: list[ExitRef], x: float, y: float
     ) -> tuple[list[ExitRef], float]:
+        success_return = complex_retry_loop_return(stmt.body)
+        if success_return is not None and self.detail_level != "detailed":
+            return self.build_compact_retry_loop(stmt, success_return, incoming, x, y)
         cond = self.g.add_node("decision", stmt.label, x, y, self.function)
         self.g.connect(incoming, cond)
         infinite = is_infinite_loop(stmt.label)
         enter_label = "enter" if infinite else "yes"
         body_exits, body_y = self.build_sequence(
-            stmt.body, [ExitRef(cond, enter_label)], x, y + self.Y_GAP
+            stmt.body, [ExitRef(cond, enter_label)], x, self.next_y_after(cond)
         )
         after_loop = [] if infinite else [ExitRef(cond, "no")]
         has_break_exit = False
+        loop_sources: list[ExitRef] = []
         for ref in body_exits:
             if ref.kind in {"normal", "continue"}:
-                self.g.add_edge(ref.node_id, cond, "loop", backward=True)
+                loop_sources.append(ref)
             elif ref.kind == "break":
                 has_break_exit = True
-                after_loop.append(ExitRef(ref.node_id, "break"))
+                after_loop.append(ExitRef(ref.node_id, ref.label or "break"))
             else:
                 after_loop.append(ref)
+        if len(loop_sources) == 1:
+            ref = loop_sources[0]
+            loop_label = " ".join(part for part in (ref.label, "loop") if part)
+            self.g.add_edge(ref.node_id, cond, loop_label, backward=True)
+        elif loop_sources:
+            source_bottom = max(
+                self.g.node(ref.node_id).y + self.g.node(ref.node_id).h for ref in loop_sources
+            )
+            merge = self.g.add_node("merge", "", x, source_bottom + 28, self.function)
+            self.g.connect(loop_sources, merge)
+            self.g.add_edge(merge, cond, "loop", backward=True)
         exit_padding = 90 if has_break_exit else 0
         return after_loop, max(body_y, y + self.Y_GAP * 2) + exit_padding
+
+    def build_compact_retry_loop(
+        self,
+        stmt: Statement,
+        success_return: Statement,
+        incoming: list[ExitRef],
+        x: float,
+        y: float,
+    ) -> tuple[list[ExitRef], float]:
+        """Render deeply nested write/read retries as a readable subflow."""
+        cond = self.g.add_node("decision", stmt.label, x, y, self.function)
+        self.g.connect(incoming, cond)
+        cycle = self.g.add_node(
+            "expr",
+            "Send target power and verify readback\n(with nested read retries)",
+            x,
+            self.next_y_after(cond),
+            self.function,
+        )
+        self.g.add_edge(cond, cycle, "yes")
+        verified = self.g.add_node(
+            "decision",
+            "Target power verified?",
+            x,
+            self.next_y_after(cycle),
+            self.function,
+        )
+        self.g.add_edge(cycle, verified)
+        returned = self.g.add_node(
+            "return",
+            success_return.label,
+            x,
+            self.next_y_after(verified),
+            self.function,
+        )
+        self.g.add_edge(verified, returned, "yes")
+        self.g.add_edge(returned, self.end_id, "return")
+        self.g.add_edge(verified, cond, "no loop", backward=True)
+        return [ExitRef(cond, "no")], self.next_y_after(returned) + 20
 
     def build_do_while(
         self, stmt: Statement, incoming: list[ExitRef], x: float, y: float
     ) -> tuple[list[ExitRef], float]:
         do_node = self.g.add_node("expr", "do", x, y, self.function)
         self.g.connect(incoming, do_node)
-        body_exits, body_y = self.build_sequence(stmt.body, [ExitRef(do_node)], x, y + self.Y_GAP)
-        cond = self.g.add_node("decision", stmt.label, x, max(body_y, y + self.Y_GAP), self.function)
+        body_exits, body_y = self.build_sequence(stmt.body, [ExitRef(do_node)], x, self.next_y_after(do_node))
+        cond = self.g.add_node("decision", stmt.label, x, max(body_y, self.next_y_after(do_node)), self.function)
         after_loop = [ExitRef(cond, "no")]
         has_break_exit = False
+        loop_sources: list[ExitRef] = []
         for ref in body_exits:
             if ref.kind in {"normal", "continue"}:
-                self.g.add_edge(ref.node_id, cond)
+                loop_sources.append(ref)
             elif ref.kind == "break":
                 has_break_exit = True
-                after_loop.append(ExitRef(ref.node_id, "break"))
+                after_loop.append(ExitRef(ref.node_id, ref.label or "break"))
             else:
                 after_loop.append(ref)
+        if len(loop_sources) == 1:
+            self.g.add_edge(loop_sources[0].node_id, cond, loop_sources[0].label)
+        elif loop_sources:
+            source_bottom = max(
+                self.g.node(ref.node_id).y + self.g.node(ref.node_id).h for ref in loop_sources
+            )
+            merge = self.g.add_node("merge", "", x, source_bottom + 28, self.function)
+            self.g.connect(loop_sources, merge)
+            self.g.add_edge(merge, cond)
         self.g.add_edge(cond, do_node, "yes", backward=True)
         return after_loop, cond_y_after(self.g.node(cond)) + (110 if has_break_exit else 40)
 
@@ -1053,7 +1261,7 @@ def parse_source(path: Path) -> list[Function]:
     return CParser(tokens).parse_functions()
 
 
-def build_graph(functions: list[Function]) -> FlowGraph:
+def build_graph(functions: list[Function], detail_level: str = "standard") -> FlowGraph:
     graph = FlowGraph()
     if not functions:
         start = graph.add_node("terminator", "Start", 0, 40, "__global__")
@@ -1067,14 +1275,27 @@ def build_graph(functions: list[Function]) -> FlowGraph:
         start = graph.add_node("terminator", "Start", x_offset, start_y, fn.name)
         end = graph.add_node("terminator", "End", x_offset, start_y, fn.name)
         graph.functions.append(FunctionFlow(fn.name, start, end))
-        builder = FlowBuilder(graph, end, fn.name)
+        builder = FlowBuilder(graph, end, fn.name, detail_level)
         exits, next_y = builder.build_sequence(fn.body, [ExitRef(start)], x_offset, start_y + 120)
         end_y = max(next_y + 20, graph.max_y + 50)
         graph.set_node_position(end, x_offset, end_y)
         for ref in exits:
             if ref.kind == "normal":
                 graph.add_edge(ref.node_id, end, ref.label)
+        terminal_edges = [
+            edge
+            for edge in graph.edges
+            if edge.target == end
+            and graph.node(edge.source).function == fn.name
+            and re.search(r"\b(return|throw|terminate)\b", edge.label)
+        ]
+        if len(terminal_edges) > 1:
+            terminal_merge = graph.add_node("merge", "", x_offset, end_y - 42, fn.name)
+            for edge in terminal_edges:
+                edge.target = terminal_merge
+            graph.add_edge(terminal_merge, end, "return")
         x_offset += 720
+    assign_route_lanes(graph)
     return graph
 
 
@@ -1167,14 +1388,15 @@ def write_drawio(graph: FlowGraph, path: Path) -> None:
                 "edge": "1",
             },
         )
+        points = edge_points(graph, edge)
         geom_attrs = {"relative": "1", "as": "geometry"}
         if edge.backward or side_routed_edge(graph, edge):
             geom_attrs["x"] = "-0.85"
             geom_attrs["y"] = "-12"
         geom = ET.SubElement(cell, "mxGeometry", geom_attrs)
-        if edge.backward or side_routed_edge(graph, edge):
+        if len(points) > 2:
             arr = ET.SubElement(geom, "Array", {"as": "points"})
-            for x, y in edge_points(graph, edge)[1:-1]:
+            for x, y in points[1:-1]:
                 ET.SubElement(arr, "mxPoint", {"x": f"{x:.1f}", "y": f"{y:.1f}"})
     indent_xml(mxfile)
     path.write_text(ET.tostring(mxfile, encoding="unicode"), encoding="utf-8")
@@ -1201,7 +1423,7 @@ def drawio_style(kind: str) -> str:
 
 
 def drawio_edge_style(graph: FlowGraph, edge: Edge) -> str:
-    style = "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;"
+    style = "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;labelBackgroundColor=#ffffff;"
     if edge.backward:
         return style + "exitX=0;exitY=0.5;entryX=0;entryY=0.5;"
     if side_routed_edge(graph, edge):
@@ -1273,12 +1495,12 @@ def svg_node(node: Node) -> str:
     else:
         rx = 8 if node.kind in {"function", "break", "continue"} else 0
         shape = f'<rect x="{x:.1f}" y="{y:.1f}" width="{node.w:.1f}" height="{node.h:.1f}" rx="{rx}" fill="{fill}" stroke="{stroke}"/>'
-    text = svg_text(node.label, node.x, y + node.h / 2)
+    text = svg_text(node, node.x, y + node.h / 2)
     return f"<g>{shape}{text}</g>"
 
 
-def svg_text(label: str, cx: float, cy: float) -> str:
-    lines = wrap_label(label, 28)
+def svg_text(node: Node, cx: float, cy: float) -> str:
+    lines = node_label_lines(node.kind, node.label)
     line_h = 15
     start = cy - (len(lines) - 1) * line_h / 2
     parts = []
@@ -1312,8 +1534,10 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
         side = route_side(graph, edge)
         lane = side_lane_index(edge)
         merge_y = t.y - 26 - lane * 12
+        if re.search(r"\b(return|throw|terminate)\b", edge.label):
+            merge_y = t.y - 26
         if side < 0:
-            left = min(s.x - s.w / 2, t.x - t.w / 2) - side_lane_offset(edge, 80)
+            left = side_route_coordinate(graph, edge, -1, 80)
             return [
                 (s.x - s.w / 2, s.y + s.h / 2),
                 (left, s.y + s.h / 2),
@@ -1321,7 +1545,7 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
                 (t.x, merge_y),
                 (t.x, t.y),
             ]
-        right = max(s.x + s.w / 2, t.x + t.w / 2) + side_lane_offset(edge, 120)
+        right = side_route_coordinate(graph, edge, 1, 120)
         return [
             (s.x + s.w / 2, s.y + s.h / 2),
             (right, s.y + s.h / 2),
@@ -1335,24 +1559,118 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
     return [(s.x, s.y), (t.x, t.y + t.h)]
 
 
-def side_routed_edge(graph: FlowGraph, edge: Edge) -> bool:
-    if not re.search(r"\b(break|goto)\b", edge.label):
-        return False
+def side_route_coordinate(graph: FlowGraph, edge: Edge, side: int, base: float) -> float:
+    """Place a forward side channel outside every node it must bypass."""
     source = graph.node(edge.source)
     target = graph.node(edge.target)
-    return target.y > source.y
+    siblings = [edge]
+    if target.kind == "merge":
+        # Branches that intentionally converge at one connector share a rail.
+        # This depicts an actual merge instead of drawing several parallel
+        # long-distance bypasses for the same destination.
+        siblings = [
+            candidate
+            for candidate in graph.edges
+            if candidate.target == edge.target
+            and candidate.backward is False
+            and side_routed_edge(graph, candidate)
+            and route_side(graph, candidate) == side
+        ]
+    elif re.search(r"\b(return|throw|terminate)\b", edge.label):
+        # Every terminal edge ends at the same End node; use one outer rail.
+        siblings = [
+            candidate
+            for candidate in graph.edges
+            if re.search(r"\b(return|throw|terminate)\b", candidate.label)
+            and graph.node(candidate.target).id == target.id
+        ]
+    top = min(graph.node(candidate.source).y for candidate in siblings)
+    bottom = max(
+        max(graph.node(candidate.source).y + graph.node(candidate.source).h, target.y + target.h)
+        for candidate in siblings
+    )
+    nodes = [
+        node
+        for node in graph.nodes
+        if node.y < bottom and node.y + node.h > top
+    ]
+    shared_rail = len(siblings) > 1
+    offset = base + (24 if shared_rail else side_lane_index(edge) * 72)
+    if side < 0:
+        return min(node.x - node.w / 2 for node in nodes) - offset
+    return max(node.x + node.w / 2 for node in nodes) + offset
+
+
+def side_routed_edge(graph: FlowGraph, edge: Edge) -> bool:
+    source = graph.node(edge.source)
+    target = graph.node(edge.target)
+    if target.y <= source.y:
+        return False
+    if re.search(r"\b(break|goto|return|throw|terminate)\b", edge.label):
+        return True
+    # Any decision outcome that skips intermediate nodes needs a side channel.
+    # This includes empty guard branches such as `if (invalid) { } else ...`.
+    if source.kind not in {"decision", "switch"}:
+        return False
+    source_bottom = source.y + source.h
+    target_top = target.y
+    for node in graph.nodes:
+        if node.id in {source.id, target.id}:
+            continue
+        overlaps_vertical_gap = node.y < target_top and node.y + node.h > source_bottom
+        crosses_spine = node.x - node.w / 2 <= source.x <= node.x + node.w / 2
+        if overlaps_vertical_gap and crosses_spine:
+            return True
+    return False
+
+
+def assign_route_lanes(graph: FlowGraph) -> None:
+    """Assign non-overlapping side lanes to every routed edge.
+
+    The old edge-number modulo scheme reused a lane after four edges, which
+    made nested retries draw on top of each other. Here, overlapping vertical
+    intervals always receive distinct lanes.
+    """
+    groups: dict[int, list[tuple[float, float, Edge]]] = {-1: [], 1: []}
+    for edge in graph.edges:
+        if edge.backward:
+            side = -1
+        elif side_routed_edge(graph, edge):
+            side = route_side(graph, edge)
+        else:
+            continue
+        source = graph.node(edge.source)
+        target = graph.node(edge.target)
+        top = min(source.y + source.h / 2, target.y + target.h / 2)
+        bottom = max(source.y + source.h / 2, target.y + target.h / 2)
+        edge.route_side = side
+        groups[side].append((top, bottom, edge))
+
+    for entries in groups.values():
+        lane_ends: list[float] = []
+        for top, bottom, edge in sorted(entries, key=lambda item: (item[0], item[1], edge_number(item[2].label))):
+            lane = 0
+            while lane < len(lane_ends) and lane_ends[lane] > top + 1:
+                lane += 1
+            if lane == len(lane_ends):
+                lane_ends.append(bottom)
+            else:
+                lane_ends[lane] = bottom
+            edge.route_lane = lane
 
 
 def side_lane_offset(edge: Edge, base: float) -> float:
-    # Stagger side channels so loop, break, and goto edges do not sit on top of each other.
-    return base + side_lane_index(edge) * 56
+    # Stagger side channels so overlapping loop, break, and goto edges remain distinct.
+    return base + side_lane_index(edge) * 72
 
 
 def side_lane_index(edge: Edge) -> int:
-    return edge_number(edge.label) % 4
+    return edge.route_lane
 
 
 def route_side(graph: FlowGraph, edge: Edge) -> int:
+    if edge.route_side:
+        return edge.route_side
     source = graph.node(edge.source)
     target = graph.node(edge.target)
     if "yes break" in edge.label and abs(source.x - target.x) < 20:
@@ -1396,7 +1714,10 @@ def write_png(graph: FlowGraph, png_path: Path) -> None:
         if edge.label:
             lx, ly = edge_label_point(graph, edge, [tuple(float(v) for v in p) for p in edge_points(graph, edge)])
             lx, ly = pt((lx, ly))
-            draw.text((lx + 4, ly - 14), edge.label, fill=(20, 20, 20), font=font)
+            tx, ty = lx + 4, ly - 14
+            bbox = draw.textbbox((tx, ty), edge.label, font=font)
+            draw.rectangle((bbox[0] - 2, bbox[1] - 1, bbox[2] + 2, bbox[3] + 1), fill="white")
+            draw.text((tx, ty), edge.label, fill=(20, 20, 20), font=font)
 
     for node in graph.nodes:
         draw_png_node(draw, font, node, pt, scale)
@@ -1458,7 +1779,7 @@ def draw_png_node(draw, font, node: Node, pt, scale: float) -> None:
         draw.polygon([(x1 + skew, y1), (x2, y1), (x2 - skew, y2), (x1, y2)], fill=fill, outline=outline)
     else:
         draw.rectangle((x1, y1, x2, y2), fill=fill, outline=outline, width=2)
-    lines = wrap_label(node.label, 24)
+    lines = node_label_lines(node.kind, node.label)
     line_h = 12
     start_y = cy - (len(lines) * line_h) // 2
     for idx, line in enumerate(lines):
@@ -1549,8 +1870,26 @@ def enumerate_function_paths(graph: FlowGraph, max_paths_per_function: int = 200
 
 
 def write_paths_report(path: Path, function_paths: list[FunctionPaths]) -> None:
-    lines = ["# Function branch paths", ""]
-    lines.append("Each path is a Start-to-End edge-number sequence. Loop back edges are expanded at most once per path.")
+    lines = ["# Function branch paths / 函数分支路径", ""]
+    lines.append(
+        "Each path is a Start-to-End edge-number sequence. Loop back edges are expanded at most once per path."
+    )
+    lines.append(
+        "每条路径是一个 Start-to-End 的边号序列。循环回边每条路径最多展开一次。"
+    )
+    lines.append("")
+    lines.append(
+        "**Important / 重要提醒：** Paths are enumerated by traversing the control-flow graph "
+        "combinatorially. The enumeration does NOT perform data-flow analysis, so some paths "
+        "may combine contradictory branch outcomes (e.g., a loop that sets `count > 0` followed "
+        "by `if (count == 0)` taking the `yes` branch). Always filter paths against semantic "
+        "constraints — the listed count is an upper bound, not a precise reachable-path count."
+    )
+    lines.append(
+        "路径是通过控制流图的组合遍历枚举的，不包含数据流分析。部分路径可能组合了矛盾的谓词 "
+        "（例如循环体内设置了 `count > 0`，后续 `if (count == 0)` 却走了 `yes` 分支）。"
+        "路径数是理论上界，不是精确可达路径数，用于测试规划前必须做语义过滤。"
+    )
     lines.append("")
     for item in function_paths:
         lines.append(f"## {item.function}")
@@ -1564,9 +1903,7 @@ def write_paths_report(path: Path, function_paths: list[FunctionPaths]) -> None:
             continue
         for idx, steps in enumerate(item.paths, 1):
             sequence = "-".join(str(step.edge_no) for step in steps if step.edge_no)
-            detailed = " -> ".join(step.edge_label for step in steps)
             lines.append(f"- Path {idx}: `{sequence}`")
-            lines.append(f"  Labels: {detailed}")
         lines.append("")
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
@@ -1584,6 +1921,12 @@ def base_function_name(name: str) -> str:
     if "::" in name:
         return name.split("::")[-1]
     return name
+
+
+def output_folder_name(name: str) -> str:
+    """Return a filesystem-safe folder/file stem for a function name."""
+    normalized = re.sub(r'[<>:"/\\|?*]+', "_", name.strip())
+    return normalized.strip(". ") or "unnamed_function"
 
 
 def normalize_call_name(name: str) -> str:
@@ -2007,6 +2350,15 @@ def build_analysis(
                 "branches": branches,
                 "branch_path_count": len(paths.paths),
                 "paths_truncated": paths.truncated,
+                "paths_note": (
+                    "Paths are enumerated combinatorially from the control-flow graph without "
+                    "data-flow analysis. Some paths may combine contradictory branch outcomes "
+                    "(e.g. a branch that depends on a variable being both zero and non-zero). "
+                    "Always filter against semantic constraints — the count is an upper bound, "
+                    "not a precise reachable-path count. "
+                    "路径是通过控制流图的组合遍历枚举的，不包含数据流分析。部分路径可能组合了矛盾的"
+                    "谓词。路径数是理论上界，不是精确可达路径数，使用前必须做语义过滤。"
+                ),
                 "paths": path_rows,
                 "unit_test_scenarios": [
                     {
@@ -2090,9 +2442,8 @@ def convert(
     basename: str | None = None,
     outputs: set[str] | None = None,
     function_name: str | None = None,
+    detail_level: str = "standard",
 ) -> dict[str, Path]:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    name = basename or source.stem
     functions = parse_source(source)
     if not functions:
         raise ValueError("No complete function definitions were parsed from the source file")
@@ -2103,7 +2454,11 @@ def convert(
         ]
         if not functions:
             raise ValueError(f"Function not found: {function_name}")
-    graph = build_graph(functions)
+    folder_source = functions[0].name if len(functions) == 1 else (basename or source.stem)
+    out_dir = out_dir / output_folder_name(folder_source)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    name = basename or output_folder_name(functions[0].name if len(functions) == 1 else source.stem)
+    graph = build_graph(functions, detail_level)
     all_paths = {
         "mermaid": out_dir / f"{name}.mmd",
         "drawio": out_dir / f"{name}.drawio",
@@ -2154,17 +2509,24 @@ def main(argv: list[str] | None = None) -> int:
         "--out-dir",
         type=Path,
         default=None,
-        help="Output directory (defaults to this skill's output folder)",
+        help="Base output directory (a function-named subfolder is created inside it)",
     )
     parser.add_argument("--name", default=None, help="Output basename without extension")
     parser.add_argument("--function", dest="function_name", help="Convert only the named function")
+    parser.add_argument(
+        "--detail-level",
+        choices=("overview", "standard", "detailed"),
+        default="standard",
+        help="Diagram density: standard keeps deep retry internals compact; detailed expands them",
+    )
     parser.add_argument("--preview", action="store_true", help="Also generate a PNG preview")
     parser.add_argument("--svg", action="store_true", help="Also generate an SVG preview")
     parser.add_argument("--mermaid", action="store_true", help="Also generate Mermaid text")
     parser.add_argument("--paths", action="store_true", help="Also generate the path report")
     parser.add_argument("--report", action="store_true", help="Also generate the conversion report")
     parser.add_argument("--analysis", action="store_true", help="Also generate analysis JSON")
-    parser.add_argument("--all", action="store_true", help="Generate every supported artifact")
+    parser.add_argument("--validate", action="store_true", help="Run structural validation on the .drawio after generation")
+    parser.add_argument("--all", action="store_true", help="Generate every supported artifact (implies --validate)")
     args = parser.parse_args(argv)
     source = args.source
     if not source.exists():
@@ -2175,6 +2537,7 @@ def main(argv: list[str] | None = None) -> int:
     outputs = {"drawio"}
     if args.all:
         outputs = {"drawio", "png", "svg", "mermaid", "paths", "report", "analysis"}
+        args.validate = True
     else:
         if args.preview:
             outputs.add("png")
@@ -2189,12 +2552,30 @@ def main(argv: list[str] | None = None) -> int:
         if args.analysis:
             outputs.add("analysis")
     try:
-        paths = convert(source, out_dir, args.name, outputs, args.function_name)
+        paths = convert(source, out_dir, args.name, outputs, args.function_name, args.detail_level)
     except Exception as exc:
         print(f"Conversion failed: {exc}", file=sys.stderr)
         return 1
     for key, value in paths.items():
         print(f"{key}: {value}")
+
+    # Structural validation
+    if args.validate and "drawio" in paths:
+        validate_script = Path(__file__).resolve().parent / "validate.py"
+        if validate_script.exists():
+            result = subprocess.run(
+                [sys.executable, str(validate_script), str(paths["drawio"])],
+                capture_output=True, text=True,
+            )
+            if result.stdout:
+                print(result.stdout)
+            if result.returncode != 0:
+                if result.stderr:
+                    print(result.stderr, file=sys.stderr)
+                print("note: validation found issues. Fix and re-run, or inspect manually.", file=sys.stderr)
+        else:
+            print("note: validate.py not found — skipping structural validation", file=sys.stderr)
+
     return 0
 
 
