@@ -643,7 +643,7 @@ def compact_tokens(tokens: Iterable[Token]) -> str:
     if not raw:
         return ""
     out = ""
-    no_space_before = {")", "]", "}", ";", ",", ":", "::", "++", "--"}
+    no_space_before = {")", "]", "}", ";", ",", ":", "::", "++", "--", "[", ".", "->"}
     no_space_after = {"(", "[", "{", ".", "->", "::", "++", "--", "!", "~"}
     operators = {
         "=",
@@ -694,6 +694,49 @@ def is_terminating_call(label: str) -> bool:
     return bool(re.search(r"(?:^|\s)(?:" + names + r")\s*\(", label))
 
 
+def is_setup_statement(stmt: Statement) -> bool:
+    """Return whether a plain expression is a declaration or state update."""
+    if stmt.kind != "expr":
+        return False
+    label = stmt.label.strip()
+    if not label:
+        return False
+    if re.search(r"(?:\+\+|--|(?<![=!<>])=(?!=)|\+=|-=|\*=|/=)", label):
+        return True
+    # Includes project-specific declarations such as U8, S32, and
+    # Charge_PortStatus, without treating an ordinary function call as one.
+    return bool(re.match(r"^[A-Za-z_]\w*(?:\s*::\s*\w+)?(?:\s+\w+|\s*\*)", label)) and "(" not in label
+
+
+def collapse_setup_statements(statements: list[Statement]) -> list[Statement]:
+    """Collapse consecutive declarations/assignments into a single setup node."""
+    result: list[Statement] = []
+    pending: list[Statement] = []
+
+    def flush() -> None:
+        nonlocal pending
+        if len(pending) == 1:
+            result.append(pending[0])
+        elif pending:
+            result.append(
+                Statement(
+                    "expr",
+                    label="\n".join(stmt.label for stmt in pending),
+                    line=pending[0].line,
+                )
+            )
+        pending = []
+
+    for stmt in statements:
+        if is_setup_statement(stmt):
+            pending.append(stmt)
+        else:
+            flush()
+            result.append(stmt)
+    flush()
+    return result
+
+
 class FlowGraph:
     def __init__(self) -> None:
         self.nodes: list[Node] = []
@@ -740,32 +783,38 @@ class FlowGraph:
 def size_for(kind: str, label: str) -> tuple[float, float]:
     if kind == "merge":
         return 14, 14
-    width = max(130, min(300, 9 * max_line_len(label) + 34))
+    lines = node_label_lines(kind, label)
+    width = max(130, 8 * max((len(line) for line in lines), default=8) + 34)
     if kind in {"decision", "switch"}:
-        return max(width, 170), 86
+        return max(width, 220), max(86, 22 * len(lines) + 28)
     if kind in {"terminator", "return"}:
-        return max(120, min(240, width)), 62
+        return max(120, width), 62
     if kind == "io":
-        return max(width, 170), 62
+        return max(width, 170), max(62, 22 * len(lines) + 18)
     if kind == "function":
         return max(width, 180), 44
     if kind == "label":
         return max(width, 130), 44
-    return width, max(54, 22 * len(wrap_label(label, 28)) + 18)
+    return width, max(54, 22 * len(lines) + 18)
 
 
-def max_line_len(label: str) -> int:
-    return max((len(line) for line in wrap_label(label, 32)), default=8)
-
-
-def wrap_label(label: str, width: int = 28) -> list[str]:
-    text = re.sub(r"\s+", " ", label.strip())
-    if not text:
-        return [""]
+def wrap_label(label: str, width: int | None = None) -> list[str]:
+    raw_lines = label.strip().splitlines() or [""]
     lines: list[str] = []
-    for segment in text.split("\\n"):
-        lines.extend(textwrap.wrap(segment, width=width, break_long_words=True) or [""])
-    return lines[:6]
+    for segment in raw_lines:
+        text = re.sub(r"\s+", " ", segment.strip())
+        if width is None:
+            lines.append(text)
+        else:
+            lines.extend(textwrap.wrap(text, width=width, break_long_words=True) or [""])
+    return lines or [""]
+
+
+def node_label_lines(kind: str, label: str) -> list[str]:
+    # Process nodes preserve complete C statements and grow to fit them. Only
+    # decisions are wrapped so their diamond shape remains legible.
+    width = 44 if kind in {"decision", "switch"} else None
+    return wrap_label(label, width)
 
 
 def goto_target(label: str) -> str:
@@ -802,9 +851,16 @@ class FlowBuilder:
         self.end_id = end_id
         self.function = function
 
+    def next_y_after(self, node_id: str) -> float:
+        node = self.g.node(node_id)
+        # Keep the established vertical rhythm for ordinary nodes, while
+        # reserving extra space for wrapped labels such as TRACE_INFO calls.
+        return node.y + max(self.Y_GAP, node.h + 60)
+
     def build_sequence(
         self, statements: list[Statement], incoming: list[ExitRef], x: float, y: float
     ) -> tuple[list[ExitRef], float]:
+        statements = collapse_setup_statements(statements)
         normal = [ref for ref in incoming if ref.kind == "normal"]
         carried: list[ExitRef] = [ref for ref in incoming if ref.kind != "normal"]
         cur_y = y
@@ -832,35 +888,35 @@ class FlowBuilder:
         if stmt.kind in {"expr", "io"}:
             node = self.g.add_node(stmt.kind, stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
-            return [ExitRef(node)], y + self.Y_GAP
+            return [ExitRef(node)], self.next_y_after(node)
         if stmt.kind == "terminate":
             node = self.g.add_node("expr", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
             self.g.add_edge(node, self.end_id, "terminate")
-            return [ExitRef(node, kind="terminate")], y + self.Y_GAP
+            return [ExitRef(node, kind="terminate")], self.next_y_after(node)
         if stmt.kind == "return":
             node = self.g.add_node("return", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
             self.g.add_edge(node, self.end_id, "return")
-            return [ExitRef(node, kind="return")], y + self.Y_GAP
+            return [ExitRef(node, kind="return")], self.next_y_after(node)
         if stmt.kind == "throw":
             node = self.g.add_node("return", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
             self.g.add_edge(node, self.end_id, "throw")
-            return [ExitRef(node, kind="throw")], y + self.Y_GAP
+            return [ExitRef(node, kind="throw")], self.next_y_after(node)
         if stmt.kind == "goto":
             node = self.g.add_node("goto", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
             target = goto_target(stmt.label)
-            return [ExitRef(node, kind=f"goto:{target}" if target else "goto")], y + self.Y_GAP
+            return [ExitRef(node, kind=f"goto:{target}" if target else "goto")], self.next_y_after(node)
         if stmt.kind == "label":
             node = self.g.add_node("label", f"{stmt.label}:", x, y, self.function)
             self.g.connect(incoming, node)
-            return [ExitRef(node)], y + self.Y_GAP
+            return [ExitRef(node)], self.next_y_after(node)
         if stmt.kind in {"break", "continue"}:
             node = self.g.add_node(stmt.kind, stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
-            return [ExitRef(node, kind=stmt.kind)], y + self.Y_GAP
+            return [ExitRef(node, kind=stmt.kind)], self.next_y_after(node)
         if stmt.kind == "if":
             return self.build_if(stmt, incoming, x, y)
         if stmt.kind in {"while", "for"}:
@@ -873,7 +929,7 @@ class FlowBuilder:
             return self.build_try(stmt, incoming, x, y)
         node = self.g.add_node("expr", stmt.label or stmt.kind, x, y, self.function)
         self.g.connect(incoming, node)
-        return [ExitRef(node)], y + self.Y_GAP
+        return [ExitRef(node)], self.next_y_after(node)
 
     def build_if(
         self, stmt: Statement, incoming: list[ExitRef], x: float, y: float
@@ -902,9 +958,12 @@ class FlowBuilder:
                 ExitRef(cond, f"yes {simple_then_jump.kind}", kind=simple_then_jump.kind),
                 ExitRef(cond, f"no {simple_else_jump.kind}", kind=simple_else_jump.kind),
             ], y + self.Y_GAP
-        branch_y = y + self.Y_GAP
+        branch_y = self.next_y_after(cond)
+        # Keep a one-sided if on the vertical spine. Reserve left/right
+        # placement only when an else branch needs its own column.
+        then_x = x - self.X_GAP / 2 if stmt.else_body else x
         then_exits, then_y = self.build_sequence(
-            stmt.body, [ExitRef(cond, "yes")], x - self.X_GAP / 2, branch_y
+            stmt.body, [ExitRef(cond, "yes")], then_x, branch_y
         )
         if stmt.else_body:
             else_exits, else_y = self.build_sequence(
@@ -922,16 +981,17 @@ class FlowBuilder:
         infinite = is_infinite_loop(stmt.label)
         enter_label = "enter" if infinite else "yes"
         body_exits, body_y = self.build_sequence(
-            stmt.body, [ExitRef(cond, enter_label)], x, y + self.Y_GAP
+            stmt.body, [ExitRef(cond, enter_label)], x, self.next_y_after(cond)
         )
         after_loop = [] if infinite else [ExitRef(cond, "no")]
         has_break_exit = False
         for ref in body_exits:
             if ref.kind in {"normal", "continue"}:
-                self.g.add_edge(ref.node_id, cond, "loop", backward=True)
+                loop_label = " ".join(part for part in (ref.label, "loop") if part)
+                self.g.add_edge(ref.node_id, cond, loop_label, backward=True)
             elif ref.kind == "break":
                 has_break_exit = True
-                after_loop.append(ExitRef(ref.node_id, "break"))
+                after_loop.append(ExitRef(ref.node_id, ref.label or "break"))
             else:
                 after_loop.append(ref)
         exit_padding = 90 if has_break_exit else 0
@@ -942,8 +1002,8 @@ class FlowBuilder:
     ) -> tuple[list[ExitRef], float]:
         do_node = self.g.add_node("expr", "do", x, y, self.function)
         self.g.connect(incoming, do_node)
-        body_exits, body_y = self.build_sequence(stmt.body, [ExitRef(do_node)], x, y + self.Y_GAP)
-        cond = self.g.add_node("decision", stmt.label, x, max(body_y, y + self.Y_GAP), self.function)
+        body_exits, body_y = self.build_sequence(stmt.body, [ExitRef(do_node)], x, self.next_y_after(do_node))
+        cond = self.g.add_node("decision", stmt.label, x, max(body_y, self.next_y_after(do_node)), self.function)
         after_loop = [ExitRef(cond, "no")]
         has_break_exit = False
         for ref in body_exits:
@@ -951,7 +1011,7 @@ class FlowBuilder:
                 self.g.add_edge(ref.node_id, cond)
             elif ref.kind == "break":
                 has_break_exit = True
-                after_loop.append(ExitRef(ref.node_id, "break"))
+                after_loop.append(ExitRef(ref.node_id, ref.label or "break"))
             else:
                 after_loop.append(ref)
         self.g.add_edge(cond, do_node, "yes", backward=True)
@@ -1273,12 +1333,12 @@ def svg_node(node: Node) -> str:
     else:
         rx = 8 if node.kind in {"function", "break", "continue"} else 0
         shape = f'<rect x="{x:.1f}" y="{y:.1f}" width="{node.w:.1f}" height="{node.h:.1f}" rx="{rx}" fill="{fill}" stroke="{stroke}"/>'
-    text = svg_text(node.label, node.x, y + node.h / 2)
+    text = svg_text(node, node.x, y + node.h / 2)
     return f"<g>{shape}{text}</g>"
 
 
-def svg_text(label: str, cx: float, cy: float) -> str:
-    lines = wrap_label(label, 28)
+def svg_text(node: Node, cx: float, cy: float) -> str:
+    lines = node_label_lines(node.kind, node.label)
     line_h = 15
     start = cy - (len(lines) - 1) * line_h / 2
     parts = []
@@ -1313,7 +1373,7 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
         lane = side_lane_index(edge)
         merge_y = t.y - 26 - lane * 12
         if side < 0:
-            left = min(s.x - s.w / 2, t.x - t.w / 2) - side_lane_offset(edge, 80)
+            left = side_route_coordinate(graph, edge, -1, 80)
             return [
                 (s.x - s.w / 2, s.y + s.h / 2),
                 (left, s.y + s.h / 2),
@@ -1321,7 +1381,7 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
                 (t.x, merge_y),
                 (t.x, t.y),
             ]
-        right = max(s.x + s.w / 2, t.x + t.w / 2) + side_lane_offset(edge, 120)
+        right = side_route_coordinate(graph, edge, 1, 120)
         return [
             (s.x + s.w / 2, s.y + s.h / 2),
             (right, s.y + s.h / 2),
@@ -1335,12 +1395,44 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
     return [(s.x, s.y), (t.x, t.y + t.h)]
 
 
-def side_routed_edge(graph: FlowGraph, edge: Edge) -> bool:
-    if not re.search(r"\b(break|goto)\b", edge.label):
-        return False
+def side_route_coordinate(graph: FlowGraph, edge: Edge, side: int, base: float) -> float:
+    """Place a forward side channel outside every node it must bypass."""
     source = graph.node(edge.source)
     target = graph.node(edge.target)
-    return target.y > source.y
+    top = min(source.y, target.y)
+    bottom = max(source.y + source.h, target.y + target.h)
+    nodes = [
+        node
+        for node in graph.nodes
+        if node.y < bottom and node.y + node.h > top
+    ]
+    offset = side_lane_offset(edge, base)
+    if side < 0:
+        return min(node.x - node.w / 2 for node in nodes) - offset
+    return max(node.x + node.w / 2 for node in nodes) + offset
+
+
+def side_routed_edge(graph: FlowGraph, edge: Edge) -> bool:
+    source = graph.node(edge.source)
+    target = graph.node(edge.target)
+    if target.y <= source.y:
+        return False
+    if re.search(r"\b(break|goto|return|throw|terminate)\b", edge.label):
+        return True
+    # A forward "no" edge only needs a side channel when it skips nodes. Keep
+    # the ordinary fall-through path centered beneath a one-sided if.
+    if source.kind not in {"decision", "switch"} or not re.search(r"\bno\b", edge.label):
+        return False
+    source_bottom = source.y + source.h
+    target_top = target.y
+    for node in graph.nodes:
+        if node.id in {source.id, target.id}:
+            continue
+        overlaps_vertical_gap = node.y < target_top and node.y + node.h > source_bottom
+        crosses_spine = node.x - node.w / 2 <= source.x <= node.x + node.w / 2
+        if overlaps_vertical_gap and crosses_spine:
+            return True
+    return False
 
 
 def side_lane_offset(edge: Edge, base: float) -> float:
@@ -1458,7 +1550,7 @@ def draw_png_node(draw, font, node: Node, pt, scale: float) -> None:
         draw.polygon([(x1 + skew, y1), (x2, y1), (x2 - skew, y2), (x1, y2)], fill=fill, outline=outline)
     else:
         draw.rectangle((x1, y1, x2, y2), fill=fill, outline=outline, width=2)
-    lines = wrap_label(node.label, 24)
+    lines = node_label_lines(node.kind, node.label)
     line_h = 12
     start_y = cy - (len(lines) * line_h) // 2
     for idx, line in enumerate(lines):
@@ -1564,9 +1656,7 @@ def write_paths_report(path: Path, function_paths: list[FunctionPaths]) -> None:
             continue
         for idx, steps in enumerate(item.paths, 1):
             sequence = "-".join(str(step.edge_no) for step in steps if step.edge_no)
-            detailed = " -> ".join(step.edge_label for step in steps)
             lines.append(f"- Path {idx}: `{sequence}`")
-            lines.append(f"  Labels: {detailed}")
         lines.append("")
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
