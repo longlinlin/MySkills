@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex StarHub"
+  short_description: "Codex-led routing for external large language models."
+  default_prompt: "Use $codex-starhub to design a Codex-led routing plan for Doubao, GLM, Qwen, and other external models."
