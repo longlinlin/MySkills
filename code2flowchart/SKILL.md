@@ -15,7 +15,7 @@ Convert C/C++ control flow into an editable `.drawio` diagram. Keep the graph re
 4. Open or inspect the `.drawio` result.
 5. Generate a PNG preview only when visual review is needed.
 6. If parsing misses important logic, isolate the function, expand relevant macros, or simplify template-heavy syntax and rerun.
-7. When AI review or monitoring is requested, run with `--preview`, inspect the diagram against the source, and write an `.ai-review.md` result in `output`.
+7. When AI review or monitoring is requested, run with `--preview`, inspect the diagram against the source, and write an `.ai-review.md` result in `output/<function>/`.
 
 Default command:
 
@@ -23,7 +23,7 @@ Default command:
 python code2flowchart/scripts/code2flowchart.py source.c --function target
 ```
 
-The default output is only `source.drawio`, written to the skill's `output` folder. Use `-o` or `--out-dir` to override that destination.
+The default output is only `<function>.drawio`, written to `output/<function>/`. Every function has its own output folder. Use `-o` or `--out-dir` to override the base output directory.
 
 Optional outputs:
 
@@ -38,7 +38,7 @@ python code2flowchart/scripts/code2flowchart.py source.c --all
 Available flags:
 
 - `--function NAME`: convert only the named function.
-- `-o DIR` / `--out-dir DIR`: override the default `output` folder.
+- `-o DIR` / `--out-dir DIR`: override the base output directory; a function-named subfolder is still created inside it.
 - `--preview`: add a PNG preview.
 - `--svg`: add an SVG preview.
 - `--mermaid`: add the Mermaid intermediate file.
@@ -76,6 +76,8 @@ For embedded retry loops, cleanup labels, task dispatchers, or hardware calls, r
 - Merge adjacent low-value statements when manual simplification is needed.
 - Preserve decisions, exits, side effects, cleanup, and externally visible calls.
 - Use a labeled process node for code that cannot be parsed reliably instead of inventing control flow.
+- Collapse deeply nested retry loops that contain an inner retry loop and success return into a labeled verification subflow; keep its retry, success-return, and exhausted-retry exits visible.
+- Treat verbose `TRACE_INFO` and `TRACE_WARN` calls as flow annotations rather than standalone nodes when they would obscure the control flow. Keep error reporting visible with a concise semantic label.
 - Review macro-heavy, template-heavy, lambda-heavy, or extension-heavy code manually.
 
 The bundled parser is intentionally lightweight and is not a compiler-verified CFG.
@@ -89,7 +91,7 @@ The bundled parser is intentionally lightweight and is not a compiler-verified C
 
 ## AI review and monitoring
 
-When the user requests AI review, do not only confirm XML validity. Compare the source control flow with the generated diagram, inspect the PNG preview, and record the result as `output/<name>.ai-review.md`.
+When the user requests AI review, do not only confirm XML validity. Compare the source control flow with the generated diagram, inspect the PNG preview, and record the result as `output/<function>/<function>.ai-review.md`.
 
 - Verify every decision outcome, loop entry/back/exit, break/continue, return/throw/goto, and relevant terminal call.
 - Verify that meaningful calls and cleanup steps remain visible.

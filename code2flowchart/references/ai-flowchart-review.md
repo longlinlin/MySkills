@@ -18,7 +18,7 @@ Use this review protocol when the user asks for AI review, monitoring, or valida
 
 ## Review result
 
-Write `output/<name>.ai-review.md` using this structure:
+Write `output/<function>/<function>.ai-review.md` using this structure:
 
 ```markdown
 # AI flowchart review: <function>
