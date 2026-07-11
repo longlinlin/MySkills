@@ -86,6 +86,13 @@ Scope this skill tightly to C/C++ code-to-flowchart conversion. Do not handle ge
 | `lang_support.py` | 多语言提取框架（抽象基类+注册表） |
 | `c_flowchart.py` | C/C++ 语言支持（参考实现） |
 | `py/js/go_flowchart.py` | Python/JS/Go 语言支持（桩，待实现） |
+| `dd_generator.py` | DD详细设计文档生成器（`.dd.md`） |
+| `ut_generator.py` | UT单元测试设计 + 骨架代码生成器（`.ut.md`, `.ut.cpp`, `.ut.c`） |
+
+### 子技能
+| 技能 | 用途 |
+|------|------|
+| `skills/ddut-generator/SKILL.md` | DD/UT 自动化生成：详细设计文档 + 单元测试用例 + 测试骨架代码 |
 
 使用时优先按"单函数一个流程图"处理。复杂 `.c/.cpp` 文件不要直接画成一个大图，应先选择目标函数。如果代码里有宏、编译器扩展、回调或硬件库函数隐藏控制流，要明确标记为需要人工确认，不能凭空推断。
 
@@ -151,7 +158,10 @@ python code2flowchart/scripts/code2flowchart.py source.c --all
 - `--report`: add the conversion report.
 - `--analysis`: add structured analysis JSON.
 - `--validate`: run `validate.py` structural lint after generation.
-- `--all`: generate every supported artifact (implies `--validate`).
+- `--dd`: generate Detailed Design document (`.dd.md`) from analysis.
+- `--ut`: generate Unit Test design (`.ut.md`) + test code (`.ut.cpp`, `.ut.c`).
+- `--project-prefix <PREFIX>`: set Function ID prefix for DD/UT, e.g. `SWDD_CHARGE`.
+- `--all`: generate every supported artifact (implies `--validate --dd --ut`).
 
 ## Scope limits
 

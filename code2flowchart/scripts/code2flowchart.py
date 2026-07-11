@@ -2333,17 +2333,58 @@ def build_analysis(
         path_rows = [path_to_json(idx, steps) for idx, steps in enumerate(paths.paths, 1)]
         signature = parse_function_signature(fn.header, fn.name)
         parameters = signature["parameters"]
+
+        # --- DD Evaluation fields ---
+        # Branch count: number of decision/diamond nodes (if, for, while, do-while, switch)
+        branch_num = sum(1 for b in branches if b.get("kind") in ("if", "for", "while", "do_while", "switch"))
+        cc = cyclomatic_complexity(fn)
+        if cc < 2:
+            complexity_level = "Low"
+        elif cc <= 10:
+            complexity_level = "Medium"
+        else:
+            complexity_level = "High"
+
+        # Interactivity: non-deduplicated call count (only actual function calls)
+        call_counts: dict[str, int] = {}
+        _call_re = re.compile(r"(?:^|\b)([a-zA-Z_]\w*)\s*\(")
+        for stmt in statement_iter(fn.body):
+            if stmt.kind in ("expr", "io", "terminate") and stmt.label:
+                for m in _call_re.finditer(stmt.label):
+                    call_name = m.group(1)
+                    # Skip C keywords that look like function calls
+                    if call_name in ("if", "for", "while", "switch", "return", "sizeof",
+                                     "void", "int", "char", "float", "double", "long",
+                                     "short", "unsigned", "signed", "struct", "union",
+                                     "enum", "static", "const", "volatile", "typedef",
+                                     "extern", "U8", "U16", "U32", "S8", "S16", "S32"):
+                        continue
+                    call_counts[call_name] = call_counts.get(call_name, 0) + 1
+        interactivity = sum(call_counts.values())
+        calls_detail = [{"name": name, "count": cnt} for name, cnt in sorted(call_counts.items())]
+        criticality = len(called_by[fn.name])
         function_rows.append(
             {
                 "name": fn.name,
                 "signature": fn.header,
                 "line": fn.line,
+                "function_id": "",  # filled by --project-prefix or LLM
                 "description_draft": draft_description(fn, calls, branches),
+                "constraint": "",   # filled by LLM
+                "verification_criteria": "",  # filled by LLM
                 "return_value": return_value_info(signature),
                 "parameters": parameters,
                 "input_parameters": [param for param in parameters if param.get("direction") in {"input", "input_output"}],
                 "output_parameters": output_parameters(parameters),
-                "cyclomatic_complexity": cyclomatic_complexity(fn),
+                "cyclomatic_complexity": cc,
+                "function_evaluation": {
+                    "branch_num": branch_num,
+                    "cyclomatic_complexity": cc,
+                    "complexity_level": complexity_level,
+                    "interactivity": interactivity,
+                    "calls_detail": calls_detail,
+                    "criticality": criticality,
+                },
                 "calls": calls,
                 "called_by_in_file": called_by[fn.name],
                 "recommended_test_frameworks": recommend_frameworks(source, fn, calls),
@@ -2526,7 +2567,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", action="store_true", help="Also generate the conversion report")
     parser.add_argument("--analysis", action="store_true", help="Also generate analysis JSON")
     parser.add_argument("--validate", action="store_true", help="Run structural validation on the .drawio after generation")
-    parser.add_argument("--all", action="store_true", help="Generate every supported artifact (implies --validate)")
+    parser.add_argument("--dd", action="store_true", help="Generate Detailed Design document (.dd.md) from analysis.json")
+    parser.add_argument("--ut", action="store_true", help="Generate Unit Test design (.ut.md) and test code (.ut.cpp, .ut.c)")
+    parser.add_argument("--project-prefix", default="", help="Function ID prefix, e.g. SWDD_CHARGE (sets function_id in DD/UT)")
+    parser.add_argument("--all", action="store_true", help="Generate every supported artifact (implies --validate --dd --ut)")
     args = parser.parse_args(argv)
     source = args.source
     if not source.exists():
@@ -2538,6 +2582,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.all:
         outputs = {"drawio", "png", "svg", "mermaid", "paths", "report", "analysis"}
         args.validate = True
+        args.dd = True
+        args.ut = True
     else:
         if args.preview:
             outputs.add("png")
@@ -2575,6 +2621,43 @@ def main(argv: list[str] | None = None) -> int:
                 print("note: validation found issues. Fix and re-run, or inspect manually.", file=sys.stderr)
         else:
             print("note: validate.py not found — skipping structural validation", file=sys.stderr)
+
+    # DD/UT generation
+    if (args.dd or args.ut) and "drawio" in paths:
+        analysis_path = paths.get("drawio").parent / f"{paths['drawio'].stem}.analysis.json"
+        if not analysis_path.exists():
+            # analysis wasn't generated — regenerate it
+            source_path = source
+            functions = parse_source(source_path)
+            if args.function_name:
+                functions = [fn for fn in functions if fn.name == args.function_name
+                             or base_function_name(fn.name) == args.function_name]
+            if functions:
+                graph = build_graph(functions, args.detail_level)
+                function_paths = enumerate_function_paths(graph)
+                ok, message = validate_drawio(paths["drawio"])
+                analysis = build_analysis(source_path, functions, graph, function_paths, paths, ok, message)
+                write_analysis(analysis_path, analysis)
+
+        if args.dd:
+            dd_script = Path(__file__).resolve().parent / "dd_generator.py"
+            if dd_script.exists():
+                cmd = [sys.executable, str(dd_script), str(analysis_path)]
+                if args.project_prefix:
+                    cmd += ["--project-prefix", args.project_prefix]
+                subprocess.run(cmd)
+            else:
+                print("note: dd_generator.py not found — skipping DD generation", file=sys.stderr)
+
+        if args.ut:
+            ut_script = Path(__file__).resolve().parent / "ut_generator.py"
+            if ut_script.exists():
+                cmd = [sys.executable, str(ut_script), str(analysis_path)]
+                if args.project_prefix:
+                    cmd += ["--project-prefix", args.project_prefix]
+                subprocess.run(cmd)
+            else:
+                print("note: ut_generator.py not found — skipping UT generation", file=sys.stderr)
 
     return 0
 
