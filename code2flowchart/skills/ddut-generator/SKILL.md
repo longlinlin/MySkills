@@ -81,7 +81,7 @@ Example: `SWDD_CHARGE_F001`, `SWDD_CHARGE_F002`
 | Constraint | Placeholder | Needs LLM enrichment |
 | Verification Criteria | Placeholder | Needs LLM enrichment |
 | Parameter Table | `analysis.json` → `parameters` | Auto |
-| Called By | `analysis.json` → `called_by_in_file` | Auto |
+| Called By | `analysis.json` → `called_by_in_file` + cross-file search | Auto + Agent |
 | Callings | `analysis.json` → `calls` | Auto |
 | Branch Num | Count of decision nodes | Auto |
 | Cyclomatic Complexity | M = N + 1 | Auto |
@@ -90,6 +90,18 @@ Example: `SWDD_CHARGE_F001`, `SWDD_CHARGE_F002`
 | Criticality | Called-by count | Auto |
 | Flowchart | Links to .drawio/.png | Auto |
 
+### Cross-File Caller Search (Called By)
+
+`code2flowchart.py` only detects callers within the single source file. The agent MUST perform a cross-file search to find all callers across the project:
+
+1. **Identify the project root** — ask the user or infer from the source file path (e.g., `d:\project\code\`).
+2. **Search for callers** — use `grep` to search `*.c`, `*.h`, `*.cpp`, `*.hpp` files for function name references:
+   ```bash
+   grep -rn "charge_i2c_send" --include="*.c" --include="*.h" <project_root>/
+   ```
+3. **Filter results** — exclude the function's own definition and comments. A match is a caller if it appears in a function call context (e.g., `charge_i2c_send(...)` in another function body).
+4. **Update DD** — if callers are found, list them as `- \`caller_func()\` in \`file.c\``. If none found, write `- (none detected in project)`.
+
 ### LLM Enrichment Rules
 
 When the agent runs DD generation, it should:
@@ -97,6 +109,7 @@ When the agent runs DD generation, it should:
 1. **Description:** Read the function body from source. Describe: what it does, when it's called, main processing logic, external dependencies. Replace the `description_draft` with a 2-4 sentence engineering description.
 2. **Constraint:** From the function logic, derive constraints: valid parameter ranges, state preconditions, timing requirements, ordering dependencies. Example: "`chip_addr` must be a valid 7-bit I2C address (0x00-0x7F). `send_buf` must contain exactly 3 bytes."
 3. **Verification Criteria:** Based on function exits and side effects: "After call, `status` reflects the final I2C transaction result. On success: `LPI2C_STATUS_OK`. On failure after max retries: last error status."
+4. **Called By (cross-file):** Perform the cross-file caller search described above. Update the `called_by_in_file` field with project-wide results before generating the DD document. This is critical because `code2flowchart.py` only scans the single input file.
 
 ## UT Document Specification
 

@@ -148,7 +148,7 @@ def generate_dd(analysis: dict, project_prefix: str = "") -> str:
             for cb in called_by:
                 lines.append(f"- `{cb}()`")
         else:
-            lines.append("- (none detected in source file)")
+            lines.append("- (none detected in project — the agent should perform cross-file grep search)")
         lines.append("")
 
         lines.append("## Callings")
