@@ -1295,8 +1295,26 @@ def build_graph(functions: list[Function], detail_level: str = "standard") -> Fl
                 edge.target = terminal_merge
             graph.add_edge(terminal_merge, end, "return")
         x_offset += 720
+    normalize_edge_labels(graph)
     assign_route_lanes(graph)
     return graph
+
+
+def semantic_edge_label(label: str) -> str:
+    return re.sub(r"^\d+\s*", "", label).strip()
+
+
+def normalize_edge_labels(graph: FlowGraph) -> None:
+    edge_no = 0
+    for edge in graph.edges:
+        semantic_label = semantic_edge_label(edge.label)
+        if graph.node(edge.source).kind == "merge" and not semantic_label:
+            edge.label = ""
+            continue
+        edge_no += 1
+        edge.label = str(edge_no)
+        if semantic_label:
+            edge.label += f" {semantic_label}"
 
 
 def write_mermaid(graph: FlowGraph, path: Path) -> None:
@@ -1605,6 +1623,12 @@ def side_routed_edge(graph: FlowGraph, edge: Edge) -> bool:
     source = graph.node(edge.source)
     target = graph.node(edge.target)
     if target.y <= source.y:
+        return False
+    if (
+        target.kind == "terminator"
+        and source.kind in {"return", "merge"}
+        and abs(source.x - target.x) < 20
+    ):
         return False
     if re.search(r"\b(break|goto|return|throw|terminate)\b", edge.label):
         return True
