@@ -2373,7 +2373,7 @@ def build_analysis(
         call_counts: dict[str, int] = {}
         _call_re = re.compile(r"(?:^|\b)([a-zA-Z_]\w*)\s*\(")
         for stmt in statement_iter(fn.body):
-            if stmt.kind in ("expr", "io", "terminate") and stmt.label:
+            if stmt.kind in ("expr", "io", "terminate", "if", "for", "while", "do_while", "switch") and stmt.label:
                 for m in _call_re.finditer(stmt.label):
                     call_name = m.group(1)
                     # Skip C keywords that look like function calls
