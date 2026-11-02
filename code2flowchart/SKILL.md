@@ -6,7 +6,7 @@ compatibility: Requires Python 3.10+. Optional Pillow for PNG preview. Optional 
 
 # code2Flowchart
 
-Convert C/C++ control flow into an editable `.drawio` diagram. Keep the graph readable and semantically useful; do not mirror every source token as a separate node.
+Convert C/C++ control flow into an editable `.drawio` diagram. Use draw.io as the drawing and editing format; PNG, SVG, and Mermaid do not replace the editable deliverable. Read [references/flowchart-conventions.md](references/flowchart-conventions.md) before generating, refining, or reviewing a diagram. Keep the graph readable and semantically useful; do not mirror every source token as a separate node.
 
 Proactively suggest flowchart conversion when: a C/C++ function has 3+ control-flow decisions (if/switch/loop), contains goto/cleanup labels, implements retry/timeout logic, is a task dispatcher, or handles hardware state machines.
 
@@ -114,6 +114,7 @@ Choose the workflow mode based on what the user wants:
 1. **Locate source** — find the source file, or save pasted code as a temporary `.c` or `.cpp` file.
 2. **Identify target** — determine the function to convert. For multi-function or complex files, prefer exactly one function with `--function <name>`.
 3. **Read before converting** — read the selected function body and nearby macro definitions. Do not infer control flow from file names, function names, or comments alone.
+   **Plan the control flow before layout** — apply the sequence, selection, and loop templates in [references/flowchart-conventions.md](references/flowchart-conventions.md#代码转流程图的结构规范). Identify normal exits separately from break/continue/return/goto, preserve their real targets, then arrange nodes and route edges. If the converter cannot preserve the template's semantics, correct the diagram or mark it partial; documenting the rule alone does not implement it in the converter.
 4. **Run converter** — execute the bundled converter (see default command below).
 5. **Structural validation (REQUIRED)** — run `python code2flowchart/scripts/validate.py output/<fn>/<fn>.drawio` before proceeding. If errors are found, fix and regenerate. **Max 3 retries.**
 6. **Visual self-check** — use vision capability to inspect the PNG preview for the 7 defect categories listed in the self-check table below. Apply the prescribed auto-fix, re-render, and re-validate after each fix. **Max 2 self-check rounds.** Skip if vision is unavailable.
@@ -174,6 +175,8 @@ python code2flowchart/scripts/code2flowchart.py source.c --all
 
 ## Graph rules
 
+Apply the code-to-flowchart structure and path rules in [references/flowchart-conventions.md](references/flowchart-conventions.md#代码转流程图的结构规范), not just its shape styles. Control-flow semantics take precedence over visual symmetry, compactness, or a generic single-exit drawing convention.
+
 - Label the function entry and exit exactly `Start` and `End`.
 - Use ellipses for Start, End, return, and throw.
 - Use rectangles for declarations, assignments, ordinary calls, and processing.
@@ -186,7 +189,7 @@ python code2flowchart/scripts/code2flowchart.py source.c --all
 - Merge case exits through one small connector before continuing downward.
 - Route loop-back edges on the left and keep forward flow on a dominant vertical spine.
 - Route `goto` and complex break exits through staggered side channels.
-- Number every edge monotonically and append branch meaning such as `yes`, `no`, `case`, `loop`, `return`, or `terminate`.
+- Number visible edges consecutively from 1 and append branch meaning such as `yes`, `no`, `case`, `loop`, `return`, or `terminate`. Leave a simple merge's outgoing connector unlabeled when it has no branch meaning; renumber the remaining edges without gaps in every generated artifact.
 - Treat known non-returning calls such as `exit`, `abort`, and `osThreadTerminate` as terminating flow. Review `osThreadTerminate` manually if it targets another thread and can return.
 - Do not add a separate function-title box above Start.
 
@@ -231,6 +234,8 @@ Apply the prescribed auto-fix, then re-export and re-validate. **Max 2 rounds.**
 - Prefer `validate.py --strict` for gating CI/CD or automated workflows.
 - Use `validate.py --score` to compare layout variants of the same graph (lower is better).
 - Visually inspect branch merges, loop exits, switch fallthrough, goto targets, and terminating calls.
+- Verify visible edge numbers are unique and consecutive from 1; simple unlabeled merge exits must not consume a number. Match labels across diagrams, path reports, and analysis when those artifacts are requested.
+- Inspect the draw.io rendering at both whole-diagram and label-detail scale. Check merge-point labels, arrowheads, and return-to-End routing; a custom preview alone does not prove draw.io rendering is correct. Disclose when draw.io rendering cannot be checked.
 - Do not treat XML validation as semantic validation.
 - If no function is parsed, do not accept the empty Start-to-End diagram as a successful conversion.
 - Check that every visible source-level decision has matching outgoing paths.
