@@ -37,7 +37,7 @@ Scope this skill tightly to C/C++ code-to-flowchart conversion. Do not handle ge
 根据用户意图选择模式：**Generate**（默认，完整10步转换）、**Review**（AI审查现有图）、**Refine**（修改已有图，最小化XML编辑）、**Validate**（仅运行 validate.py 结构检查）
 
 ### 工作流要点
-1. 定位源码 → 2. 识别目标函数（`--function`） → 3. 先读函数体再转换 → 4. 运行转换器 → 5. **结构校验**：必须运行 `validate.py`（最多重试3次） → 6. **视觉自查**：检查7类缺陷（形状重叠、标签截断、连接丢失、形状越界、边穿过形状、边堆叠、边标签重叠），最多2轮 → 7. 检查 `.drawio` → 8. AI审查（按需） → 9. **用户审查循环**（最多5轮，超出建议手动微调） → 10. **解析失败降级**：6级渐进降级（展开宏→简化模板→折叠嵌套→缩小范围→标记为partial→手工指导），最多3步，绝不声称已知错误的输出成功
+1. 定位源码 → 2. 识别目标函数（`--function`） → 3. 先读函数体再转换 → 4. 运行转换器 → 5. **结构校验**：必须运行 `validate.py --strict`（最多重试3次） → 6. **生成后自检**：读取 `skills/flowchart-self-check/SKILL.md`，核对源码，有视觉能力时检查最新渲染图，输出 `.self-check.md`（视觉修复最多2轮） → 7. 检查 `.drawio` → 8. AI审查（按需） → 9. **用户审查循环**（最多5轮，超出建议手动微调） → 10. **解析失败降级**：6级渐进降级（展开宏→简化模板→折叠嵌套→缩小范围→标记为partial→手工指导），最多3步，绝不声称已知错误的输出成功
 
 ### 硬性轮次上限
 - 结构校验重试：最多 3 次
@@ -53,7 +53,7 @@ Scope this skill tightly to C/C++ code-to-flowchart conversion. Do not handle ge
 | 3 | 连接丢失 | 箭头未连接到形状 | 验证 source/target ID |
 | 4 | 形状越界 | 形状远离主体集群 | 移到集群附近，确保 y>0 |
 | 5 | 边穿过形状 | 边穿过无关形状内部 | 添加航点或增加间距 |
-| 6 | 边堆叠 | 多条边共用同一路径 | 分散出入口点 |
+| 6 | 非预期边堆叠 | 不同路径共用长距离通道 | 分开远端通道，保留真实共同后继处的短距离合流 |
 | 7 | 边标签重叠 | 边文字与节点/标签/边线重叠 | 添加白色背景 + 偏移 |
 
 ### 常见错误
@@ -65,7 +65,7 @@ Scope this skill tightly to C/C++ code-to-flowchart conversion. Do not handle ge
 | 密集分支标签重叠 | 使用 `--detail-level overview` |
 | 模板代码静默失败 | 简化模板或标记为 partial |
 | XML合法但无实际内容 | 运行 `validate.py --score` 检查边数 |
-| PNG 空白或太小 | 安装 Pillow，增大间距 |
+| PNG 渲染依赖缺失 | 安装 Pillow，或仅使用 `--svg`；不得把空白占位图当成成功预览 |
 | Goto目标未找到 | 检查标签名是否完全匹配 |
 
 ### 路径枚举注意事项
@@ -92,11 +92,12 @@ Scope this skill tightly to C/C++ code-to-flowchart conversion. Do not handle ge
 ### 子技能
 | 技能 | 用途 |
 |------|------|
+| [skills/flowchart-self-check/SKILL.md](skills/flowchart-self-check/SKILL.md) | 生成或修改后必做的源码、严格结构与可用视觉自检，输出 `.self-check.md` |
 | `skills/ddut-generator/SKILL.md` | DD/UT 自动化生成：详细设计文档 + 单元测试用例 + 测试骨架代码 |
 
 使用时优先按"单函数一个流程图"处理。复杂 `.c/.cpp` 文件不要直接画成一个大图，应先选择目标函数。如果代码里有宏、编译器扩展、回调或硬件库函数隐藏控制流，要明确标记为需要人工确认，不能凭空推断。
 
-输出的核心文件是 `.drawio`。PNG、SVG、Mermaid、路径报告和分析 JSON 都是辅助产物，只在用户需要预览、审查、测试路径或调试转换器时生成。
+输出的核心文件是 `.drawio`。PNG、SVG 可为生成后自检按需生成；Mermaid、路径报告和分析 JSON 仍按用户需求生成。自检由使用本 skill 的 AI 执行，Python CLI 本身不会自动调用视觉模型。
 
 ## Entry-Point Routing
 
@@ -115,8 +116,8 @@ Choose the workflow mode based on what the user wants:
 2. **Identify target** — determine the function to convert. For multi-function or complex files, prefer exactly one function with `--function <name>`.
 3. **Read before converting** — read the selected function body and nearby macro definitions. Do not infer control flow from file names, function names, or comments alone.
 4. **Run converter** — execute the bundled converter (see default command below).
-5. **Structural validation (REQUIRED)** — run `python code2flowchart/scripts/validate.py output/<fn>/<fn>.drawio` before proceeding. If errors are found, fix and regenerate. **Max 3 retries.**
-6. **Visual self-check** — use vision capability to inspect the PNG preview for the 7 defect categories listed in the self-check table below. Apply the prescribed auto-fix, re-render, and re-validate after each fix. **Max 2 self-check rounds.** Skip if vision is unavailable.
+5. **Structural validation (REQUIRED)** — run `python code2flowchart/scripts/validate.py output/<fn>/<fn>.drawio --strict` before proceeding. If errors or warnings are found, fix and regenerate. **Max 3 retries.**
+6. **Post-generation self-check (REQUIRED)** — read [skills/flowchart-self-check/SKILL.md](skills/flowchart-self-check/SKILL.md), compare source flow, inspect a current rendered image when vision is available, and write `<basename>.self-check.md`. Repeat after diagram edits. **Max 2 visual repair rounds.** If vision/rendering is unavailable, record `SKIPPED` and a partial result, never a visual pass.
 7. **Open/inspect** — examine the `.drawio` result in draw.io desktop or via the browser fallback URL.
 8. **AI review** (when requested) — run the full comparison protocol (see AI review section below). Include structural validation results from Step 5.
 9. **Review loop** — show the image to the user, collect feedback, apply minimal targeted XML edits, re-export. **Max 5 rounds.** After 5 rounds, suggest the user fine-tune manually in draw.io desktop or at [diagrams.net](https://app.diagrams.net).
@@ -150,8 +151,9 @@ python code2flowchart/scripts/code2flowchart.py source.c --all
 ## Available flags
 
 - `--function NAME`: convert only the named function.
+- `--define NAME` / `--undef NAME`: specify whether a macro is defined for conditional compilation; repeat for multiple names. Unknown or unsupported conditions stop conversion and require preprocessed source.
 - `-o DIR` / `--out-dir DIR`: override the base output directory; a function-named subfolder is still created inside it.
-- `--preview`: add a PNG preview.
+- `--preview`: add a PNG preview; requires Pillow. A missing dependency returns nonzero without creating a blank placeholder. Already generated draw.io/SVG files remain available.
 - `--svg`: add an SVG preview.
 - `--mermaid`: add the Mermaid intermediate file.
 - `--paths`: add function path sequences.
@@ -162,6 +164,8 @@ python code2flowchart/scripts/code2flowchart.py source.c --all
 - `--ut`: generate Unit Test design (`.ut.md`) + test code (`.ut.cpp`, `.ut.c`).
 - `--project-prefix <PREFIX>`: set Function ID prefix for DD/UT, e.g. `SWDD_CHARGE`.
 - `--all`: generate every supported artifact (implies `--validate --dd --ut`).
+
+For `#if/#ifdef/#elif` code, select the active build branch with `--define` and `--undef` as needed. The converter handles constant conditions and `defined(...)` combined with `!`, `&&`, or `||`. It does not expand macro values or include files; use source preprocessed by the project's compiler for other expressions. A nonzero exit from validation or DD/UT generation makes the converter command fail.
 
 ## Scope limits
 
@@ -177,20 +181,29 @@ python code2flowchart/scripts/code2flowchart.py source.c --all
 - Label the function entry and exit exactly `Start` and `End`.
 - Use ellipses for Start, End, return, and throw.
 - Use rectangles for declarations, assignments, ordinary calls, and processing.
+- Put consecutive declarations/assignments in one process rectangle within the same straight-line block; stop at a decision, loop, call-only statement, label, or exit. Do not move statements across a control-flow boundary.
 - Use parallelograms for C stdio and C++ iostream operations.
 - Use diamonds for `if`, conditional loops, and `switch`.
+- For `do…while`, draw the body before the condition and use an invisible entry junction for the back edge; do not add a process box containing only `do`.
 - Keep `for (;;)` and equivalent infinite loops free of a false/no exit edge.
 - Remove a top-level trailing `break` from each switch case instead of drawing a break box.
 - Merge equivalent empty switch cases into a single "No test call" or equivalent branch.
 - Add an explicit `no match` route when a switch has no `default` case.
-- Merge case exits through one small connector before continuing downward.
-- Route loop-back edges on the left and keep forward flow on a dominant vertical spine.
-- Route `goto` and complex break exits through staggered side channels.
-- Number every edge monotonically and append branch meaning such as `yes`, `no`, `case`, `loop`, `return`, or `terminate`.
+- Merge case exits through an invisible routing junction before continuing downward; never draw a black connector dot.
+- Route loop-back edges on the left and break/goto exits on the right; keep forward flow on a dominant vertical spine and avoid crossing channels.
+- For a branch that skips a process box inside a loop, rejoin below that box on an inner corridor; use the opposite side for long return edges when needed to avoid crossings.
+- Route `goto` and complex break exits through staggered right-side channels.
+- Keep different exits on independent rails even when they share a destination; ordinary merges may converge near the target, with outer/longer exits joining below inner/shorter ones.
+- Keep terminal paths on separate long-distance rails, then combine them with the final return at an invisible junction above End. End has one downward incoming arrow; reserve space below the last executable node for all join segments and do not add a synthetic return step.
+- Use one function-wide boundary reference for loop-back and exit rails on each side. An early return that bypasses a later loop must stay outside that loop's rail; the final return may continue straight downward when no node blocks the path.
+- Number real control-flow edges monotonically and append useful branch meaning such as `yes`, `no`, `case`, `loop`, or `terminate`. A purely geometric common stem from the final junction to End is unlabelled. When a return/throw node already states the action, show only its outgoing edge number; retain terminal semantics in internal path data.
 - Treat known non-returning calls such as `exit`, `abort`, and `osThreadTerminate` as terminating flow. Review `osThreadTerminate` manually if it targets another thread and can return.
 - Do not add a separate function-title box above Start.
 
 Read [references/flowchart-conventions.md](references/flowchart-conventions.md) when editing layout or reviewing a branch-heavy diagram.
+Its "draw.io 官方连线规则落地" section maps official connector, waypoint, label, and arrow capabilities to this skill's concrete constraints.
+
+Read [references/layout-research.md](references/layout-research.md) when comparing other code-to-flowchart engines or changing rendering strategy; it records adopted rules, rejected tradeoffs, and source links.
 
 For embedded retry loops, cleanup labels, task dispatchers, or hardware calls, read [references/c-control-flow-patterns.md](references/c-control-flow-patterns.md).
 
@@ -211,7 +224,7 @@ The bundled parser is intentionally lightweight and is not a compiler-verified C
 
 ## Visual Self-Check (Step 6)
 
-After rendering the PNG preview, use vision to inspect for these 7 defect categories.
+Use [skills/flowchart-self-check/SKILL.md](skills/flowchart-self-check/SKILL.md) for the complete required procedure and evidence record. After rendering a current image, use vision to inspect for these 7 defect categories.
 Apply the prescribed auto-fix, then re-export and re-validate. **Max 2 rounds.**
 
 | # | Defect | What to look for | Auto-fix action |
@@ -221,14 +234,13 @@ Apply the prescribed auto-fix, then re-export and re-validate. **Max 2 rounds.**
 | 3 | **Missing connections** | Arrows not visually connecting to shape borders | Verify source/target IDs match existing cells |
 | 4 | **Off-canvas shapes** | Shapes at extreme coordinates far from the main cluster | Move near the cluster; ensure positive y |
 | 5 | **Edge-shape overlap** | Edge line crosses through an unrelated shape interior | Add waypoints (`<Array as="points">`) or increase spacing |
-| 6 | **Stacked edges** | Multiple edges sharing the same visual path | Distribute entry/exit points across shape perimeters |
+| 6 | **Unintended stacked edges** | Distinct paths share a long-distance rail | Separate remote rails; preserve intentional short joins at a real common successor |
 | 7 | **Edge-label overlap** | Edge label text overlaps a node, another label, or the edge line | Add white label background (`labelBackgroundColor=#FFFFFF`) and geometry offset |
 
 ## Verification
 
 - Require the `.drawio` file to parse as XML and contain `mxGraphModel/root`.
-- **Run `validate.py`** before accepting any diagram: `python code2flowchart/scripts/validate.py output/<fn>/<fn>.drawio`. This catches structural errors (duplicate IDs, dangling edges, bad geometry) that visual inspection misses.
-- Prefer `validate.py --strict` for gating CI/CD or automated workflows.
+- **Run `validate.py --strict`** before accepting any diagram: `python code2flowchart/scripts/validate.py output/<fn>/<fn>.drawio --strict`. This catches structural and geometry issues that visual inspection misses; a nonzero exit code is not a pass.
 - Use `validate.py --score` to compare layout variants of the same graph (lower is better).
 - Visually inspect branch merges, loop exits, switch fallthrough, goto targets, and terminating calls.
 - Do not treat XML validation as semantic validation.
@@ -236,7 +248,7 @@ Apply the prescribed auto-fix, then re-export and re-validate. **Max 2 rounds.**
 - Check that every visible source-level decision has matching outgoing paths.
 - Check that every `return`, `break`, `continue`, `goto`, `throw`, and known non-returning call exits to the correct target.
 - Check that every loop has a visible entry path, back edge, and exit path unless it is intentionally infinite.
-- Check that every `switch` case either routes to its body, falls through visibly, exits, or merges through the shared connector.
+- Check that every `switch` case either routes to its body, falls through visibly, exits, or merges through an invisible junction.
 - If a macro or compiler extension changes control flow and is not expanded, flag the diagram as partial instead of silently drawing a guessed path.
 - If the selected function is too large to read clearly, split the request into smaller function-level diagrams.
 - Check draw.io rendering constraints: required root cells, valid XML escaping, expanded edge cells with geometry, readable labels, and enough spacing for arrowheads.
@@ -276,7 +288,7 @@ Read [references/ai-flowchart-review.md](references/ai-flowchart-review.md) befo
 | Labels overlap in dense branches | Use `--detail-level overview` for compaction; increase X_GAP/Y_GAP |
 | Template-heavy code fails silently | Simplify templates or extract the instantiated form; mark as partial |
 | XML valid but diagram has no real content | Run `validate.py --score`; check edge/path counts > 0 |
-| PNG preview is blank or too small | Ensure Pillow is installed (`pip install Pillow`); increase diagram spacing |
+| PNG rendering dependency is missing | Install Pillow or request only `--svg`; do not present an old PNG or blank placeholder as a newly generated preview |
 | Goto target not found in diagram | Verify label name in source matches exactly; check for missing label token |
 | `validate.py` reports many warnings | Run with `--score` to quantify; fix highest-impact issue (through-vertex > crossing > overlap) |
 

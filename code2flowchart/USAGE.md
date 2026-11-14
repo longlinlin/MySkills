@@ -14,7 +14,7 @@ python code2flowchart/scripts/code2flowchart.py source.c --function target_func
 
 产出：`output/<function>/<function>.drawio`
 
-### 2. 生成全部产物（推荐）
+### 2. 按需生成全部产物
 
 ```bash
 python code2flowchart/scripts/code2flowchart.py source.c \
@@ -30,6 +30,18 @@ python code2flowchart/scripts/code2flowchart.py source.c \
 | `--ut` | 生成单元测试文档+骨架代码 `.ut.md` `.ut.cpp` `.ut.c` |
 | `--project-prefix` | 设置 Function ID 前缀，如 `SWDD_CHARGE` |
 
+只需要流程图时，优先使用 `--svg --validate`，不必生成 DD/UT。`--preview` 和 `--all` 都需要 Pillow；缺少依赖时返回非零退出码，不再生成空白 PNG 占位图，已写出的 `.drawio` 和 SVG 保留。已有同名 PNG 不会被覆盖，也不能当作本轮成功输出。
+
+### 条件编译
+
+源码中存在 `#if/#ifdef/#elif` 时，需明确选择编译配置。例如：
+
+```bash
+python code2flowchart/scripts/code2flowchart.py source.c --function target_func --define ENABLED --undef LEGACY
+```
+
+可重复传入 `--define NAME` 和 `--undef NAME`。目前只识别常量条件及 `defined(...)` 与 `!`、`&&`、`||` 的组合；宏数值比较、头文件提供的未知宏等情况请先用项目编译器预处理源码。无法确定活动分支时转换器会报错，不生成混合两个配置的流程图。`--validate`、`--dd` 或 `--ut` 的执行步骤失败时，命令返回非零退出码。
+
 ## 在 Claude Code 中使用 / Using in Claude Code
 
 直接粘贴 C/C++ 函数代码，说：
@@ -39,10 +51,16 @@ python code2flowchart/scripts/code2flowchart.py source.c \
 ```
 
 代理会自动：
-1. 保存代码 → 运行 `code2flowchart.py --all --validate`
+1. 保存代码 → 运行 `code2flowchart.py --svg --validate`
 2. 校验 `.drawio`（`validate.py`，0 errors 才继续）
-3. 视觉自查 PNG 预览（7项缺陷检查）
+3. 视觉自查有效的 PNG 预览或浏览器渲染后的 SVG（7项缺陷检查），不得把未渲染的 XML 校验当作视觉检查
 4. 展示结果，收集反馈（最多 5 轮）
+
+### 生成后自动自检
+
+生成或修改图后，使用本 skill 的 AI 必须继续读取 [flowchart-self-check](skills/flowchart-self-check/SKILL.md)，执行源码核对和 `validate.py --strict`。具备视觉能力时实际查看最新渲染图，特别检查循环、提前返回与 End 上方合流；没有视觉能力或无法渲染时明确标记跳过。
+
+检查结果保存在图旁的 `<basename>.self-check.md`，区分 `PASS/PARTIAL/FAIL`。仅能解析 XML、只检查旧截图，或存在未确认的控制流，都不能当成完整自检通过。这个步骤由 AI 执行，不是 Python CLI 自动调用视觉模型。
 
 ### 请求 DD/UT
 

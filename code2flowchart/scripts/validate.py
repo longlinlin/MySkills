@@ -203,8 +203,25 @@ def routes_cross(pa, pb):
     return False
 
 
+def routes_share_side_rail(pa, pb, shared_node_x):
+    """检查超过 40px 的共用竖线，允许在共同节点的中心线上合流。"""
+    for a1, a2 in zip(pa, pa[1:]):
+        if abs(a1[0] - a2[0]) > 1e-6:
+            continue
+        for b1, b2 in zip(pb, pb[1:]):
+            if abs(b1[0] - b2[0]) > 1e-6 or abs(a1[0] - b1[0]) > 1e-6:
+                continue
+            if any(abs(a1[0] - x) < 1e-6 for x in shared_node_x):
+                continue
+            overlap_top = max(min(a1[1], a2[1]), min(b1[1], b2[1]))
+            overlap_bottom = min(max(a1[1], a2[1]), max(b1[1], b2[1]))
+            if overlap_bottom - overlap_top > 40:
+                return True
+    return False
+
+
 def geometry_warnings(cells, ids, parents):
-    """Edge-through-vertex and edge-crossing warnings for waypointed edges."""
+    """检查显式布线的穿框、交叉和侧边长距离重线。"""
     warns = []
     routed = []          # (edge_id, polyline, {source, target})
     for c in cells:
@@ -223,12 +240,20 @@ def geometry_warnings(cells, ids, parents):
         for vid, box in leaves:
             if vid not in ends and route_hits_rect(pts, box):
                 warns.append(f"edge {eid!r} routes through vertex {vid!r}")
-    # Edge-edge crossings (both routes known).
+    # 交叉与共线分别检查，避免重合分支被误判为没有布线问题。
     for i in range(len(routed)):
         for j in range(i + 1, len(routed)):
-            (ia, pa, _), (ib, pb, _) = routed[i], routed[j]
+            (ia, pa, ends_a), (ib, pb, ends_b) = routed[i], routed[j]
             if routes_cross(pa, pb):
                 warns.append(f"edges {ia!r} and {ib!r} cross")
+            shared_node_x = []
+            for node_id in ends_a & ends_b:
+                node = ids.get(node_id)
+                box = abs_rect(node, ids) if node is not None else None
+                if box:
+                    shared_node_x.append(box[0] + box[2] / 2)
+            if routes_share_side_rail(pa, pb, shared_node_x):
+                warns.append(f"edges {ia!r} and {ib!r} overlap on a shared vertical rail")
     return warns
 
 

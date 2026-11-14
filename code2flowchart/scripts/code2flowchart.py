@@ -15,6 +15,7 @@ Companion scripts (in the same directory):
 from __future__ import annotations
 
 import argparse
+import ast
 import html
 import json
 import math
@@ -23,7 +24,6 @@ import re
 import subprocess
 import sys
 import textwrap
-import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -161,6 +161,7 @@ class Edge:
     backward: bool = False
     route_side: int = 0
     route_lane: int = 0
+    end_join: bool = False
 
 
 @dataclass
@@ -823,7 +824,7 @@ class FlowGraph:
 
 def size_for(kind: str, label: str) -> tuple[float, float]:
     if kind == "merge":
-        return 14, 14
+        return 2, 2
     lines = node_label_lines(kind, label)
     width = max(130, 8 * max((len(line) for line in lines), default=8) + 34)
     if kind in {"decision", "switch"}:
@@ -1138,10 +1139,12 @@ class FlowBuilder:
     def build_do_while(
         self, stmt: Statement, incoming: list[ExitRef], x: float, y: float
     ) -> tuple[list[ExitRef], float]:
-        do_node = self.g.add_node("expr", "do", x, y, self.function)
+        # do 仅表示循环入口，不作为一条可执行语句显示。
+        do_node = self.g.add_node("merge", "", x, y, self.function)
         self.g.connect(incoming, do_node)
-        body_exits, body_y = self.build_sequence(stmt.body, [ExitRef(do_node)], x, self.next_y_after(do_node))
-        cond = self.g.add_node("decision", stmt.label, x, max(body_y, self.next_y_after(do_node)), self.function)
+        body_start_y = y + 40
+        body_exits, body_y = self.build_sequence(stmt.body, [ExitRef(do_node)], x, body_start_y)
+        cond = self.g.add_node("decision", stmt.label, x, max(body_y, body_start_y), self.function)
         after_loop = [ExitRef(cond, "no")]
         has_break_exit = False
         loop_sources: list[ExitRef] = []
@@ -1180,6 +1183,7 @@ class FlowBuilder:
         max_y = y + self.Y_GAP
         has_default = False
         pending_labels: list[str] = []
+        fallthrough: list[ExitRef] = []
         for idx, (case_label, body) in enumerate(stmt.cases):
             has_default = has_default or case_label == "default"
             body_without_break, trailing_break = without_trailing_break(body)
@@ -1192,19 +1196,22 @@ class FlowBuilder:
             case_x = start_x + idx * self.X_GAP
             case_exits, case_y = self.build_sequence(
                 body_without_break,
-                [ExitRef(sw, branch_label)],
+                [ExitRef(sw, branch_label)] + fallthrough,
                 case_x,
                 y + self.Y_GAP,
             )
+            fallthrough = []
             for ref in case_exits:
-                if ref.kind in {"normal", "break"}:
-                    if ref.node_id == sw:
-                        direct_labels.append(ref.label)
-                    else:
-                        merge_sources.append(ExitRef(ref.node_id))
+                if ref.kind == "normal" and ref.node_id == sw:
+                    direct_labels.append(ref.label)
+                elif ref.kind == "normal" and not trailing_break:
+                    fallthrough.append(ref)
+                elif ref.kind in {"normal", "break"}:
+                    merge_sources.append(ExitRef(ref.node_id, ref.label))
                 else:
                     carried.append(ref)
             max_y = max(max_y, case_y)
+        merge_sources.extend(fallthrough)
         if pending_labels:
             direct_labels.append(" / ".join(pending_labels))
         if not has_default:
@@ -1255,8 +1262,175 @@ def cond_y_after(node: Node) -> float:
     return node.y + node.h + FlowBuilder.Y_GAP
 
 
-def parse_source(path: Path) -> list[Function]:
+def evaluate_preprocessor_condition(expression: str, known_macros: dict[str, bool]) -> bool:
+    expression = re.sub(r"/\*.*?\*/|//.*", "", expression).strip()
+    macro_references: dict[str, str] = {}
+
+    def replace_defined(match: re.Match[str]) -> str:
+        name = match.group(1) or match.group(2)
+        reference = f"_macro_{len(macro_references)}"
+        macro_references[reference] = name
+        return reference
+
+    expression = re.sub(
+        r"\bdefined\s*(?:\(\s*([A-Za-z_]\w*)\s*\)|\s+([A-Za-z_]\w*))",
+        replace_defined,
+        expression,
+    )
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    expression = re.sub(r"!(?!=)", " not ", expression).strip()
+    try:
+        parsed = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"unsupported preprocessor condition: {expression}") from exc
+
+    def value(node: ast.AST) -> bool:
+        if isinstance(node, ast.Constant) and isinstance(node.value, (bool, int)):
+            return bool(node.value)
+        if isinstance(node, ast.Name) and node.id in macro_references:
+            name = macro_references[node.id]
+            if name not in known_macros:
+                raise ValueError(f"macro {name} has unknown definition status")
+            return known_macros[name]
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not value(node.operand)
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            return all(value(item) for item in node.values)
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+            return any(value(item) for item in node.values)
+        raise ValueError(f"unsupported preprocessor condition: {expression}")
+
+    return value(parsed.body)
+
+
+def visible_preprocessor_text(line: str, in_block_comment: bool) -> tuple[str, bool]:
+    visible: list[str] = []
+    quote = ""
+    escaped = False
+    index = 0
+    while index < len(line):
+        if in_block_comment:
+            if line.startswith("*/", index):
+                in_block_comment = False
+                index += 2
+            else:
+                index += 1
+            continue
+        char = line[index]
+        if quote:
+            visible.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            index += 1
+            continue
+        if line.startswith("//", index):
+            break
+        if line.startswith("/*", index):
+            in_block_comment = True
+            index += 2
+            continue
+        visible.append(char)
+        if char in {'"', "'"}:
+            quote = char
+        index += 1
+    return "".join(visible), in_block_comment
+
+
+def select_preprocessor_branches(
+    code: str, defined_macros: set[str] | None = None, undefined_macros: set[str] | None = None
+) -> str:
+    known_macros = {name: True for name in defined_macros or set()}
+    known_macros.update({name: False for name in undefined_macros or set()})
+    frames: list[dict[str, bool]] = []
+    lines = code.splitlines(keepends=True)
+    selected: list[str] = []
+    index = 0
+    in_block_comment = False
+    while index < len(lines):
+        line_number = index + 1
+        line = lines[index]
+        visible_line, in_block_comment = visible_preprocessor_text(line, in_block_comment)
+        if not visible_line.lstrip().startswith("#"):
+            if not frames or frames[-1]["active"]:
+                selected.append(line)
+            else:
+                selected.append("\n")
+            index += 1
+            continue
+
+        directive = visible_line.strip()
+        selected.append("\n")
+        index += 1
+        while directive.endswith("\\") and index < len(lines):
+            continuation, in_block_comment = visible_preprocessor_text(lines[index], in_block_comment)
+            directive = directive[:-1] + continuation.strip()
+            selected.append("\n")
+            index += 1
+        match = re.match(r"#\s*(\w+)\b(.*)", directive)
+        if match is None:
+            continue
+        command, argument = match.group(1), match.group(2).strip()
+        active = not frames or frames[-1]["active"]
+        try:
+            if command in {"if", "ifdef", "ifndef"}:
+                parent_active = active
+                if not parent_active:
+                    branch_active = False
+                elif command == "if":
+                    branch_active = evaluate_preprocessor_condition(argument, known_macros)
+                else:
+                    if not re.fullmatch(r"[A-Za-z_]\w*", argument):
+                        raise ValueError(f"invalid #{command} macro name: {argument}")
+                    if argument not in known_macros:
+                        raise ValueError(f"macro {argument} has unknown definition status")
+                    branch_active = known_macros[argument] == (command == "ifdef")
+                frames.append({
+                    "parent_active": parent_active,
+                    "active": branch_active,
+                    "branch_taken": branch_active,
+                    "saw_else": False,
+                })
+            elif command == "elif":
+                if not frames or frames[-1]["saw_else"]:
+                    raise ValueError("unexpected #elif")
+                frame = frames[-1]
+                if frame["parent_active"] and not frame["branch_taken"]:
+                    frame["active"] = evaluate_preprocessor_condition(argument, known_macros)
+                else:
+                    frame["active"] = False
+                frame["branch_taken"] = frame["branch_taken"] or frame["active"]
+            elif command == "else":
+                if not frames or frames[-1]["saw_else"]:
+                    raise ValueError("unexpected #else")
+                frame = frames[-1]
+                frame["active"] = frame["parent_active"] and not frame["branch_taken"]
+                frame["branch_taken"] = True
+                frame["saw_else"] = True
+            elif command == "endif":
+                if not frames:
+                    raise ValueError("unexpected #endif")
+                frames.pop()
+            elif active and command in {"define", "undef"}:
+                name = re.match(r"([A-Za-z_]\w*)", argument)
+                if name:
+                    known_macros[name.group(1)] = command == "define"
+        except ValueError as exc:
+            raise ValueError(f"line {line_number}: {exc}; provide --define/--undef or preprocessed source") from exc
+
+    if frames:
+        raise ValueError("unterminated preprocessor conditional; provide preprocessed source")
+    return "".join(selected)
+
+
+def parse_source(
+    path: Path, defined_macros: set[str] | None = None, undefined_macros: set[str] | None = None
+) -> list[Function]:
     code = path.read_text(encoding="utf-8", errors="replace")
+    code = select_preprocessor_branches(code, defined_macros, undefined_macros)
     tokens = CTokenizer(code).tokenize()
     return CParser(tokens).parse_functions()
 
@@ -1282,18 +1456,34 @@ def build_graph(functions: list[Function], detail_level: str = "standard") -> Fl
         for ref in exits:
             if ref.kind == "normal":
                 graph.add_edge(ref.node_id, end, ref.label)
-        terminal_edges = [
+        end_edges = [
             edge
             for edge in graph.edges
             if edge.target == end
             and graph.node(edge.source).function == fn.name
-            and re.search(r"\b(return|throw|terminate)\b", edge.label)
         ]
-        if len(terminal_edges) > 1:
-            terminal_merge = graph.add_node("merge", "", x_offset, end_y - 42, fn.name)
-            for edge in terminal_edges:
-                edge.target = terminal_merge
-            graph.add_edge(terminal_merge, end, "return")
+        side_counts = {-1: 0, 1: 0}
+        needs_join = len(end_edges) > 1
+        for edge in end_edges:
+            if side_routed_edge(graph, edge):
+                side_counts[route_side(graph, edge)] += 1
+                needs_join = True
+            if abs(graph.node(edge.source).x - x_offset) > 1:
+                needs_join = True
+        end_node = graph.node(end)
+        if needs_join:
+            # 为所有回接横线预留空间，避免合流区穿过最后一个执行节点。
+            source_bottom = max(
+                graph.node(edge.source).y + graph.node(edge.source).h for edge in end_edges
+            )
+            merge_space = 50 + max(0, max(side_counts.values()) - 1) * 18
+            join_y = max(end_node.y - 48, source_bottom + merge_space)
+            graph.set_node_position(end, x_offset, max(end_node.y, join_y + 50))
+            join = graph.add_node("merge", "", x_offset, join_y, fn.name)
+            for edge in end_edges:
+                edge.target = join
+            graph.add_edge(join, end)
+            graph.edges[-1].end_join = True
         x_offset += 720
     normalize_edge_labels(graph)
     assign_route_lanes(graph)
@@ -1302,6 +1492,28 @@ def build_graph(functions: list[Function], detail_level: str = "standard") -> Fl
 
 def semantic_edge_label(label: str) -> str:
     return re.sub(r"^\d+\s*", "", label).strip()
+
+
+def display_edge_label(graph: FlowGraph, edge: Edge) -> str:
+    """返回语义已在节点上显示时，连线仅显示编号，内部语义保持不变。"""
+    source = graph.node(edge.source)
+    if source.kind == "return":
+        return re.sub(r"\s+\S.*$", "", edge.label)
+    return edge.label
+
+
+def is_end_join_edge(graph: FlowGraph, edge: Edge) -> bool:
+    """识别最终合流锚点到 End 的公共向下连线。"""
+    return (
+        edge.end_join
+        and graph.node(edge.source).kind == "merge"
+        and graph.node(edge.target).kind == "terminator"
+    )
+
+
+def is_final_join(graph: FlowGraph, node_id: str) -> bool:
+    """最终合流使用一个共同的中心坐标，避免隐形节点边界留下断口。"""
+    return any(edge.end_join and edge.source == node_id for edge in graph.edges)
 
 
 def normalize_edge_labels(graph: FlowGraph) -> None:
@@ -1325,6 +1537,7 @@ def write_mermaid(graph: FlowGraph, path: Path) -> None:
             lines.append(f"    {node.id}([{label}])")
         elif node.kind == "merge":
             lines.append(f"    {node.id}(( ))")
+            lines.append(f"    style {node.id} fill:transparent,stroke:transparent,color:transparent")
         elif node.kind in {"decision", "switch"}:
             lines.append(f"    {node.id}{{{label}}}")
         elif node.kind == "io":
@@ -1332,7 +1545,7 @@ def write_mermaid(graph: FlowGraph, path: Path) -> None:
         else:
             lines.append(f"    {node.id}[{label}]")
     for edge in graph.edges:
-        label = mermaid_escape(edge.label)
+        label = mermaid_escape(display_edge_label(graph, edge))
         arrow = f"|{label}| " if label else ""
         lines.append(f"    {edge.source} --> {arrow}{edge.target}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1398,7 +1611,7 @@ def write_drawio(graph: FlowGraph, path: Path) -> None:
             "mxCell",
             {
                 "id": f"e{idx}",
-                "value": edge.label,
+                "value": display_edge_label(graph, edge),
                 "style": drawio_edge_style(graph, edge),
                 "parent": "1",
                 "source": edge.source,
@@ -1422,7 +1635,7 @@ def write_drawio(graph: FlowGraph, path: Path) -> None:
 
 def drawio_style(kind: str) -> str:
     if kind == "merge":
-        return "ellipse;whiteSpace=wrap;html=1;fillColor=#333333;strokeColor=#333333;"
+        return "ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;opacity=0;"
     if kind in {"terminator", "return"}:
         return "ellipse;whiteSpace=wrap;html=1;"
     if kind in {"decision", "switch"}:
@@ -1441,15 +1654,27 @@ def drawio_style(kind: str) -> str:
 
 
 def drawio_edge_style(graph: FlowGraph, edge: Edge) -> str:
-    style = "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;labelBackgroundColor=#ffffff;"
+    end_arrow = "none" if graph.node(edge.target).kind == "merge" else "block"
+    style = (
+        "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;"
+        "html=1;labelBackgroundColor=#ffffff;startArrow=none;jumpStyle=none;"
+        f"endArrow={end_arrow};endFill=1;"
+    )
     if edge.backward:
         return style + "exitX=0;exitY=0.5;entryX=0;entryY=0.5;"
+    if is_end_join_edge(graph, edge):
+        return style + "exitX=0.5;exitY=0.5;exitPerimeter=0;entryX=0.5;entryY=0;"
+    entry = "entryX=0.5;entryY=0;"
+    if is_final_join(graph, edge.target):
+        entry = "entryX=0.5;entryY=0.5;entryPerimeter=0;"
     if side_routed_edge(graph, edge):
         side = route_side(graph, edge)
         if side < 0:
-            return style + "exitX=0;exitY=0.5;entryX=0.5;entryY=0;"
-        return style + "exitX=1;exitY=0.5;entryX=0.5;entryY=0;"
-    return style
+            return style + "exitX=0;exitY=0.5;" + entry
+        return style + "exitX=1;exitY=0.5;" + entry
+    if graph.node(edge.target).y >= graph.node(edge.source).y:
+        return style + "exitX=0.5;exitY=1;" + entry
+    return style + "exitX=0.5;exitY=0;entryX=0.5;entryY=1;"
 
 
 def indent_xml(elem: ET.Element, level: int = 0) -> None:
@@ -1477,7 +1702,8 @@ def write_svg(graph: FlowGraph, path: Path) -> None:
     for edge in graph.edges:
         parts.append(svg_edge(graph, edge))
     for node in graph.nodes:
-        parts.append(svg_node(node))
+        if node.kind != "merge":
+            parts.append(svg_node(node))
     parts.append("</svg>")
     path.write_text("\n".join(parts), encoding="utf-8")
 
@@ -1533,15 +1759,21 @@ def svg_edge(graph: FlowGraph, edge: Edge) -> str:
     points = edge_points(graph, edge)
     d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in points)
     lx, ly = edge_label_point(graph, edge, points)
-    label = f'<text class="label" x="{lx + 6:.1f}" y="{ly - 6:.1f}">{html.escape(edge.label)}</text>' if edge.label else ""
-    return f'<path class="edge" d="{d}"/>{label}'
+    edge_label = display_edge_label(graph, edge)
+    label = f'<text class="label" x="{lx + 6:.1f}" y="{ly - 6:.1f}">{html.escape(edge_label)}</text>' if edge_label else ""
+    marker = ' style="marker-end:none"' if graph.node(edge.target).kind == "merge" else ""
+    return f'<path class="edge" d="{d}"{marker}/>{label}'
 
 
 def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
     s = graph.node(edge.source)
     t = graph.node(edge.target)
+    target_y = t.y + t.h / 2 if is_final_join(graph, edge.target) else t.y
+    if is_end_join_edge(graph, edge):
+        source_y = s.y + s.h / 2
+        return [(s.x, source_y), (s.x, (source_y + t.y) / 2), (t.x, t.y)]
     if edge.backward:
-        left = min(s.x - s.w / 2, t.x - t.w / 2) - side_lane_offset(edge, 240)
+        left = side_route_coordinate(graph, edge, -1, 80)
         return [
             (s.x - s.w / 2, s.y + s.h / 2),
             (left, s.y + s.h / 2),
@@ -1550,10 +1782,27 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
         ]
     if side_routed_edge(graph, edge) and t.y >= s.y:
         side = route_side(graph, edge)
-        lane = side_lane_index(edge)
-        merge_y = t.y - 26 - lane * 12
-        if re.search(r"\b(return|throw|terminate)\b", edge.label):
-            merge_y = t.y - 26
+        peers = [
+            candidate for candidate in graph.edges
+            if candidate.target == edge.target
+            and not candidate.backward
+            and side_routed_edge(graph, candidate)
+            and route_side(graph, candidate) == side
+        ]
+        peers.sort(key=lambda candidate: (
+            graph.node(candidate.source).y, edge_number(candidate.label)
+        ))
+        merge_y = t.y - 26 - peers.index(edge) * 18
+        skipped_nodes = [
+            node for node in graph.nodes
+            if node.id not in {s.id, t.id}
+            and node.y >= s.y + s.h
+            and node.y + node.h < t.y
+            and node.x - node.w / 2 <= t.x <= node.x + node.w / 2
+        ]
+        if skipped_nodes:
+            merge_y = max(merge_y, max(node.y + node.h for node in skipped_nodes) + 10)
+            merge_y = min(merge_y, t.y - 8)
         if side < 0:
             left = side_route_coordinate(graph, edge, -1, 80)
             return [
@@ -1561,7 +1810,7 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
                 (left, s.y + s.h / 2),
                 (left, merge_y),
                 (t.x, merge_y),
-                (t.x, t.y),
+                (t.x, target_y),
             ]
         right = side_route_coordinate(graph, edge, 1, 120)
         return [
@@ -1569,51 +1818,23 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
             (right, s.y + s.h / 2),
             (right, merge_y),
             (t.x, merge_y),
-            (t.x, t.y),
+            (t.x, target_y),
         ]
     if t.y >= s.y:
         mid_y = (s.y + s.h + t.y) / 2
-        return [(s.x, s.y + s.h), (s.x, mid_y), (t.x, mid_y), (t.x, t.y)]
+        return [(s.x, s.y + s.h), (s.x, mid_y), (t.x, mid_y), (t.x, target_y)]
     return [(s.x, s.y), (t.x, t.y + t.h)]
 
 
 def side_route_coordinate(graph: FlowGraph, edge: Edge, side: int, base: float) -> float:
-    """Place a forward side channel outside every node it must bypass."""
+    """同一函数统一使用节点外边界，确保通道编号和实际内外顺序一致。"""
     source = graph.node(edge.source)
-    target = graph.node(edge.target)
-    siblings = [edge]
-    if target.kind == "merge":
-        # Branches that intentionally converge at one connector share a rail.
-        # This depicts an actual merge instead of drawing several parallel
-        # long-distance bypasses for the same destination.
-        siblings = [
-            candidate
-            for candidate in graph.edges
-            if candidate.target == edge.target
-            and candidate.backward is False
-            and side_routed_edge(graph, candidate)
-            and route_side(graph, candidate) == side
-        ]
-    elif re.search(r"\b(return|throw|terminate)\b", edge.label):
-        # Every terminal edge ends at the same End node; use one outer rail.
-        siblings = [
-            candidate
-            for candidate in graph.edges
-            if re.search(r"\b(return|throw|terminate)\b", candidate.label)
-            and graph.node(candidate.target).id == target.id
-        ]
-    top = min(graph.node(candidate.source).y for candidate in siblings)
-    bottom = max(
-        max(graph.node(candidate.source).y + graph.node(candidate.source).h, target.y + target.h)
-        for candidate in siblings
-    )
     nodes = [
         node
         for node in graph.nodes
-        if node.y < bottom and node.y + node.h > top
+        if node.function == source.function
     ]
-    shared_rail = len(siblings) > 1
-    offset = base + (24 if shared_rail else side_lane_index(edge) * 72)
+    offset = base + side_lane_index(edge) * 72
     if side < 0:
         return min(node.x - node.w / 2 for node in nodes) - offset
     return max(node.x + node.w / 2 for node in nodes) + offset
@@ -1625,11 +1846,20 @@ def side_routed_edge(graph: FlowGraph, edge: Edge) -> bool:
     if target.y <= source.y:
         return False
     if (
-        target.kind == "terminator"
+        target.kind in {"terminator", "merge"}
         and source.kind in {"return", "merge"}
         and abs(source.x - target.x) < 20
     ):
-        return False
+        # 最后一个返回节点可以直连；提前返回仍需绕开后续流程。
+        blocked = any(
+            node.id not in {source.id, target.id}
+            and node.y < target.y
+            and node.y + node.h > source.y + source.h
+            and node.x - node.w / 2 <= source.x <= node.x + node.w / 2
+            for node in graph.nodes
+        )
+        if not blocked:
+            return False
     if re.search(r"\b(break|goto|return|throw|terminate)\b", edge.label):
         return True
     # Any decision outcome that skips intermediate nodes needs a side channel.
@@ -1649,12 +1879,7 @@ def side_routed_edge(graph: FlowGraph, edge: Edge) -> bool:
 
 
 def assign_route_lanes(graph: FlowGraph) -> None:
-    """Assign non-overlapping side lanes to every routed edge.
-
-    The old edge-number modulo scheme reused a lane after four edges, which
-    made nested retries draw on top of each other. Here, overlapping vertical
-    intervals always receive distinct lanes.
-    """
+    """按内短外长分配独立通道，只在竖向范围不重叠时复用通道。"""
     groups: dict[int, list[tuple[float, float, Edge]]] = {-1: [], 1: []}
     for edge in graph.edges:
         if edge.backward:
@@ -1671,21 +1896,18 @@ def assign_route_lanes(graph: FlowGraph) -> None:
         groups[side].append((top, bottom, edge))
 
     for entries in groups.values():
-        lane_ends: list[float] = []
-        for top, bottom, edge in sorted(entries, key=lambda item: (item[0], item[1], edge_number(item[2].label))):
+        lane_intervals: list[list[tuple[float, float]]] = []
+        for top, bottom, edge in sorted(entries, key=lambda item: (item[1], -item[0], edge_number(item[2].label))):
             lane = 0
-            while lane < len(lane_ends) and lane_ends[lane] > top + 1:
+            while lane < len(lane_intervals) and any(
+                top < occupied_bottom - 1 and bottom > occupied_top + 1
+                for occupied_top, occupied_bottom in lane_intervals[lane]
+            ):
                 lane += 1
-            if lane == len(lane_ends):
-                lane_ends.append(bottom)
-            else:
-                lane_ends[lane] = bottom
+            if lane == len(lane_intervals):
+                lane_intervals.append([])
+            lane_intervals[lane].append((top, bottom))
             edge.route_lane = lane
-
-
-def side_lane_offset(edge: Edge, base: float) -> float:
-    # Stagger side channels so overlapping loop, break, and goto edges remain distinct.
-    return base + side_lane_index(edge) * 72
 
 
 def side_lane_index(edge: Edge) -> int:
@@ -1697,7 +1919,18 @@ def route_side(graph: FlowGraph, edge: Edge) -> int:
         return edge.route_side
     source = graph.node(edge.source)
     target = graph.node(edge.target)
-    if "yes break" in edge.label and abs(source.x - target.x) < 20:
+    if re.search(r"\b(break|goto)\b", edge.label):
+        return 1
+    if source.kind == "decision" and target.kind == "merge":
+        inside_loop = any(
+            candidate.backward
+            and graph.node(candidate.target).y < source.y
+            and graph.node(candidate.source).y > target.y
+            for candidate in graph.edges
+        )
+        if inside_loop:
+            return -1
+    if source.kind == "return":
         return -1
     if source.x < target.x - 10:
         return -1
@@ -1715,9 +1948,11 @@ def edge_label_point(graph: FlowGraph, edge: Edge, points: list[tuple[float, flo
 def write_png(graph: FlowGraph, png_path: Path) -> None:
     try:
         from PIL import Image, ImageDraw, ImageFont
-    except Exception:
-        write_minimal_png(png_path, 900, 600)
-        return
+    except ImportError as exc:
+        raise RuntimeError(
+            "PNG preview requires Pillow; install Pillow or use --svg without --preview/--all. "
+            f"No placeholder PNG was written: {png_path}"
+        ) from exc
     min_x, min_y, max_x, max_y = graph_bounds(graph)
     width = max_x - min_x
     height = max_y - min_y
@@ -1734,17 +1969,20 @@ def write_png(graph: FlowGraph, png_path: Path) -> None:
     for edge in graph.edges:
         points = [pt(p) for p in edge_points(graph, edge)]
         draw.line(points, fill=(50, 50, 50), width=2)
-        draw_arrowhead(draw, points[-2], points[-1])
-        if edge.label:
+        if graph.node(edge.target).kind != "merge":
+            draw_arrowhead(draw, points[-2], points[-1])
+        edge_label = display_edge_label(graph, edge)
+        if edge_label:
             lx, ly = edge_label_point(graph, edge, [tuple(float(v) for v in p) for p in edge_points(graph, edge)])
             lx, ly = pt((lx, ly))
             tx, ty = lx + 4, ly - 14
-            bbox = draw.textbbox((tx, ty), edge.label, font=font)
+            bbox = draw.textbbox((tx, ty), edge_label, font=font)
             draw.rectangle((bbox[0] - 2, bbox[1] - 1, bbox[2] + 2, bbox[3] + 1), fill="white")
-            draw.text((tx, ty), edge.label, fill=(20, 20, 20), font=font)
+            draw.text((tx, ty), edge_label, fill=(20, 20, 20), font=font)
 
     for node in graph.nodes:
-        draw_png_node(draw, font, node, pt, scale)
+        if node.kind != "merge":
+            draw_png_node(draw, font, node, pt, scale)
     img.save(png_path)
 
 
@@ -1810,18 +2048,6 @@ def draw_png_node(draw, font, node: Node, pt, scale: float) -> None:
         bbox = draw.textbbox((0, 0), line, font=font)
         tw = bbox[2] - bbox[0]
         draw.text((cx - tw // 2, start_y + idx * line_h), line, fill=(20, 20, 20), font=font)
-
-
-def write_minimal_png(path: Path, width: int, height: int) -> None:
-    # Valid white PNG fallback, no third-party dependency required.
-    raw = b"".join(b"\x00" + b"\xff\xff\xff" * width for _ in range(height))
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        return len(data).to_bytes(4, "big") + kind + data + zlib.crc32(kind + data).to_bytes(4, "big")
-    data = b"\x89PNG\r\n\x1a\n"
-    data += chunk(b"IHDR", width.to_bytes(4, "big") + height.to_bytes(4, "big") + b"\x08\x02\x00\x00\x00")
-    data += chunk(b"IDAT", zlib.compress(raw, 9))
-    data += chunk(b"IEND", b"")
-    path.write_bytes(data)
 
 
 def validate_drawio(path: Path) -> tuple[bool, str]:
@@ -2508,8 +2734,10 @@ def convert(
     outputs: set[str] | None = None,
     function_name: str | None = None,
     detail_level: str = "standard",
+    defined_macros: set[str] | None = None,
+    undefined_macros: set[str] | None = None,
 ) -> dict[str, Path]:
-    functions = parse_source(source)
+    functions = parse_source(source, defined_macros, undefined_macros)
     if not functions:
         raise ValueError("No complete function definitions were parsed from the source file")
     if function_name:
@@ -2578,6 +2806,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--name", default=None, help="Output basename without extension")
     parser.add_argument("--function", dest="function_name", help="Convert only the named function")
+    parser.add_argument("--define", action="append", default=[], metavar="NAME",
+                        help="Treat NAME as defined when selecting conditional compilation branches")
+    parser.add_argument("--undef", action="append", default=[], metavar="NAME",
+                        help="Treat NAME as undefined when selecting conditional compilation branches")
     parser.add_argument(
         "--detail-level",
         choices=("overview", "standard", "detailed"),
@@ -2596,6 +2828,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project-prefix", default="", help="Function ID prefix, e.g. SWDD_CHARGE (sets function_id in DD/UT)")
     parser.add_argument("--all", action="store_true", help="Generate every supported artifact (implies --validate --dd --ut)")
     args = parser.parse_args(argv)
+    defined_macros = set(args.define)
+    undefined_macros = set(args.undef)
+    macro_names = defined_macros | undefined_macros
+    if any(not re.fullmatch(r"[A-Za-z_]\w*", name) for name in macro_names):
+        parser.error("--define and --undef require C identifier names")
+    if defined_macros & undefined_macros:
+        parser.error("a macro cannot be both --define and --undef")
     source = args.source
     if not source.exists():
         print(f"Input file does not exist: {source}", file=sys.stderr)
@@ -2622,14 +2861,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.analysis:
             outputs.add("analysis")
     try:
-        paths = convert(source, out_dir, args.name, outputs, args.function_name, args.detail_level)
+        paths = convert(
+            source, out_dir, args.name, outputs, args.function_name, args.detail_level,
+            defined_macros, undefined_macros,
+        )
     except Exception as exc:
         print(f"Conversion failed: {exc}", file=sys.stderr)
         return 1
     for key, value in paths.items():
         print(f"{key}: {value}")
 
-    # Structural validation
+    failed = False
+
+    # 结构校验失败必须传递给命令行调用者。
     if args.validate and "drawio" in paths:
         validate_script = Path(__file__).resolve().parent / "validate.py"
         if validate_script.exists():
@@ -2640,11 +2884,13 @@ def main(argv: list[str] | None = None) -> int:
             if result.stdout:
                 print(result.stdout)
             if result.returncode != 0:
+                failed = True
                 if result.stderr:
                     print(result.stderr, file=sys.stderr)
-                print("note: validation found issues. Fix and re-run, or inspect manually.", file=sys.stderr)
+                print("error: validation failed; inspect the reported issues.", file=sys.stderr)
         else:
-            print("note: validate.py not found — skipping structural validation", file=sys.stderr)
+            print("error: validate.py not found", file=sys.stderr)
+            failed = True
 
     # DD/UT generation
     if (args.dd or args.ut) and "drawio" in paths:
@@ -2652,7 +2898,7 @@ def main(argv: list[str] | None = None) -> int:
         if not analysis_path.exists():
             # analysis wasn't generated — regenerate it
             source_path = source
-            functions = parse_source(source_path)
+            functions = parse_source(source_path, defined_macros, undefined_macros)
             if args.function_name:
                 functions = [fn for fn in functions if fn.name == args.function_name
                              or base_function_name(fn.name) == args.function_name]
@@ -2669,9 +2915,13 @@ def main(argv: list[str] | None = None) -> int:
                 cmd = [sys.executable, str(dd_script), str(analysis_path)]
                 if args.project_prefix:
                     cmd += ["--project-prefix", args.project_prefix]
-                subprocess.run(cmd)
+                result = subprocess.run(cmd)
+                if result.returncode != 0:
+                    print("error: DD generation failed", file=sys.stderr)
+                    failed = True
             else:
-                print("note: dd_generator.py not found — skipping DD generation", file=sys.stderr)
+                print("error: dd_generator.py not found", file=sys.stderr)
+                failed = True
 
         if args.ut:
             ut_script = Path(__file__).resolve().parent / "ut_generator.py"
@@ -2679,11 +2929,15 @@ def main(argv: list[str] | None = None) -> int:
                 cmd = [sys.executable, str(ut_script), str(analysis_path)]
                 if args.project_prefix:
                     cmd += ["--project-prefix", args.project_prefix]
-                subprocess.run(cmd)
+                result = subprocess.run(cmd)
+                if result.returncode != 0:
+                    print("error: UT generation failed", file=sys.stderr)
+                    failed = True
             else:
-                print("note: ut_generator.py not found — skipping UT generation", file=sys.stderr)
+                print("error: ut_generator.py not found", file=sys.stderr)
+                failed = True
 
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
