@@ -64,7 +64,7 @@ Scope this skill tightly to C/C++ function flowcharts and their source-linked un
 | 未解析到函数 | 检查源码是否有完整函数定义和大括号 |
 | 空 Start-to-End 图 | 检查函数名匹配，重读函数体 |
 | 宏隐藏控制流 | 展开宏或标记为 uncertain |
-| 密集分支标签重叠 | 使用 `--detail-level overview` |
+| 密集分支标签重叠 | 调整间距、通道或按函数缩小范围，不删除真实分支 |
 | 模板代码静默失败 | 简化模板或标记为 partial |
 | XML合法但无实际内容 | 运行 `validate.py --score` 检查边数 |
 | PNG 渲染依赖缺失 | 安装 Pillow，或仅使用 `--svg`；不得把空白占位图当成成功预览 |
@@ -162,6 +162,7 @@ python code2flowchart/scripts/code2flowchart.py source.c --all
 ## Available flags
 
 - `--function NAME`: convert only the named function.
+- `--detail-level overview/standard/detailed`: retained for caller compatibility; all modes preserve visible control flow. Do not assume it can remove branches or replace nested loops with domain-specific logic.
 - `--define NAME` / `--undef NAME`: specify whether a macro is defined for conditional compilation; repeat for multiple names. Unknown or unsupported conditions stop conversion and require preprocessed source.
 - `-o DIR` / `--out-dir DIR`: override the base output directory; a function-named subfolder is still created inside it.
 - `--preview`: add a PNG preview; requires Pillow. A missing dependency returns nonzero without creating a blank placeholder. Already generated draw.io/SVG files remain available.
@@ -219,6 +220,8 @@ Read [references/flowchart-conventions.md](references/flowchart-conventions.md) 
 Its "draw.io 官方连线规则落地" section maps official connector, waypoint, label, and arrow capabilities to this skill's concrete constraints.
 
 Read [references/layout-research.md](references/layout-research.md) when comparing other code-to-flowchart engines or changing rendering strategy; it records adopted rules, rejected tradeoffs, and source links.
+
+修改解析、控制流或布线时，运行完整测试，并检查 [固定验收样例](examples/acceptance/README.md)。快照差异需要源码、严格几何与实际视觉复核，不能为了让测试通过直接覆盖基线。
 
 For embedded retry loops, cleanup labels, task dispatchers, or hardware calls, read [references/c-control-flow-patterns.md](references/c-control-flow-patterns.md).
 
@@ -302,7 +305,7 @@ Read [references/ai-flowchart-review.md](references/ai-flowchart-review.md) befo
 | No function parsed | Verify source has complete function definitions with braces; check `--function` name matches |
 | Empty Start-to-End diagram | Function body may be empty or parser missed it; re-read source and verify braces |
 | Macro hides control flow | Expand the macro manually or mark as uncertain with a labelled process node |
-| Labels overlap in dense branches | Use `--detail-level overview` for compaction; increase X_GAP/Y_GAP |
+| Labels overlap in dense branches | Increase spacing or narrow the function scope; preserve real branches and loop phases |
 | Template-heavy code fails silently | Simplify templates or extract the instantiated form; mark as partial |
 | XML valid but diagram has no real content | Run `validate.py --score`; check edge/path counts > 0 |
 | PNG rendering dependency is missing | Install Pillow or request only `--svg`; do not present an old PNG or blank placeholder as a newly generated preview |

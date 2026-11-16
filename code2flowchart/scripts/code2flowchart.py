@@ -131,6 +131,7 @@ class Statement:
     else_body: list["Statement"] = field(default_factory=list)
     cases: list[tuple[str, list["Statement"]]] = field(default_factory=list)
     line: int = 0
+    for_clauses: tuple[str, str, str] | None = None
 
 
 @dataclass
@@ -439,7 +440,23 @@ class CParser:
         self.i += 1
         cond = self.read_parenthesized()
         body = to_body(self.parse_statement())
-        return Statement(kind, label=f"{kind} ({cond})", body=body, line=line)
+        clauses = None
+        if kind == "for":
+            # 按 token 的嵌套层级分隔，保留字符串和嵌套表达式中的分号。
+            parts: list[list[Token]] = [[]]
+            depth = 0
+            for token in CTokenizer(cond).tokenize():
+                if token.text == ";" and depth == 0:
+                    parts.append([])
+                    continue
+                parts[-1].append(token)
+                if token.text in {"(", "[", "{"}:
+                    depth += 1
+                elif token.text in {")", "]", "}"}:
+                    depth -= 1
+            if len(parts) == 3:
+                clauses = tuple(compact_tokens(part) for part in parts)
+        return Statement(kind, label=f"{kind} ({cond})", body=body, line=line, for_clauses=clauses)
 
     def parse_do_while(self) -> Statement:
         line = self.current().line
@@ -875,31 +892,13 @@ def single_jump_statement(statements: list[Statement]) -> Statement | None:
 
 def is_infinite_loop(label: str) -> bool:
     compact = re.sub(r"\s+", "", label).lower()
-    return compact in {"for(;;)", "while(1)", "while(true)"}
+    return compact in {"for(;;)", "for(1)", "for(true)", "while(1)", "while(true)"}
 
 
 def without_trailing_break(statements: list[Statement]) -> tuple[list[Statement], bool]:
     if statements and statements[-1].kind == "break":
         return statements[:-1], True
     return statements, False
-
-
-def statement_descendants(statements: list[Statement]) -> Iterable[Statement]:
-    for stmt in statements:
-        yield stmt
-        yield from statement_descendants(stmt.body)
-        yield from statement_descendants(stmt.else_body)
-        for _, case_body in stmt.cases:
-            yield from statement_descendants(case_body)
-
-
-def complex_retry_loop_return(statements: list[Statement]) -> Statement | None:
-    """Return the success return for a deeply nested retry loop, if present."""
-    descendants = list(statement_descendants(statements))
-    has_nested_loop = any(stmt.kind in {"for", "while", "do_while"} for stmt in descendants)
-    if not has_nested_loop:
-        return None
-    return next((stmt for stmt in descendants if stmt.kind == "return"), None)
 
 
 class FlowBuilder:
@@ -913,6 +912,17 @@ class FlowBuilder:
         self.end_id = end_id
         self.function = function
         self.detail_level = detail_level
+        self.labels: dict[str, str] = {}
+        self.gotos: list[tuple[str, str]] = []
+
+    def resolve_gotos(self) -> None:
+        """函数建图后统一解析跳转，覆盖向前、向后和跨块的标签引用。"""
+        for source_id, name in self.gotos:
+            if name not in self.labels:
+                raise ValueError(f"Unknown goto label: {name} in {self.function}")
+            target_id = self.labels[name]
+            backward = self.g.node(target_id).y <= self.g.node(source_id).y
+            self.g.add_edge(source_id, target_id, "goto", backward=backward)
 
     def next_y_after(self, node_id: str) -> float:
         node = self.g.node(node_id)
@@ -928,16 +938,6 @@ class FlowBuilder:
         carried: list[ExitRef] = [ref for ref in incoming if ref.kind != "normal"]
         cur_y = y
         for stmt in statements:
-            if stmt.kind == "label":
-                matched: list[ExitRef] = []
-                remaining: list[ExitRef] = []
-                for ref in carried:
-                    if ref.kind == f"goto:{stmt.label}":
-                        matched.append(ExitRef(ref.node_id, "goto"))
-                    else:
-                        remaining.append(ref)
-                carried = remaining
-                normal = normal + matched
             if len(normal) > 1:
                 normal, cur_y = self.merge_normal_exits(normal, x, cur_y)
             exits, cur_y = self.build_statement(stmt, normal, x, cur_y)
@@ -989,9 +989,13 @@ class FlowBuilder:
             node = self.g.add_node("goto", stmt.label, x, y, self.function)
             self.g.connect(incoming, node)
             target = goto_target(stmt.label)
+            self.gotos.append((node, target))
             return [ExitRef(node, kind=f"goto:{target}" if target else "goto")], self.next_y_after(node)
         if stmt.kind == "label":
+            if stmt.label in self.labels:
+                raise ValueError(f"Duplicate label: {stmt.label} in {self.function}")
             node = self.g.add_node("label", f"{stmt.label}:", x, y, self.function)
+            self.labels[stmt.label] = node
             self.g.connect(incoming, node)
             return [ExitRef(node)], self.next_y_after(node)
         if stmt.kind in {"break", "continue"}:
@@ -1062,12 +1066,19 @@ class FlowBuilder:
     def build_loop(
         self, stmt: Statement, incoming: list[ExitRef], x: float, y: float
     ) -> tuple[list[ExitRef], float]:
-        success_return = complex_retry_loop_return(stmt.body)
-        if success_return is not None and self.detail_level != "detailed":
-            return self.build_compact_retry_loop(stmt, success_return, incoming, x, y)
-        cond = self.g.add_node("decision", stmt.label, x, y, self.function)
+        condition_label = stmt.label
+        update = ""
+        if stmt.for_clauses is not None:
+            initial, condition, update = stmt.for_clauses
+            if initial:
+                initialized = self.g.add_node("expr", initial, x, y, self.function)
+                self.g.connect(incoming, initialized)
+                incoming = [ExitRef(initialized)]
+                y = self.next_y_after(initialized)
+            condition_label = f"for ({condition})" if condition else "for (;;)"
+        cond = self.g.add_node("decision", condition_label, x, y, self.function)
         self.g.connect(incoming, cond)
-        infinite = is_infinite_loop(stmt.label)
+        infinite = is_infinite_loop(condition_label)
         enter_label = "enter" if infinite else "yes"
         body_exits, body_y = self.build_sequence(
             stmt.body, [ExitRef(cond, enter_label)], x, self.next_y_after(cond)
@@ -1083,7 +1094,19 @@ class FlowBuilder:
                 after_loop.append(ExitRef(ref.node_id, ref.label or "break"))
             else:
                 after_loop.append(ref)
-        if len(loop_sources) == 1:
+        if update and loop_sources:
+            # for 的正常结束和 continue 都先执行更新，break/return/goto 不经过更新。
+            update_y = max(body_y, max(
+                self.g.node(ref.node_id).y + self.g.node(ref.node_id).h + 60
+                for ref in loop_sources
+            ))
+            if len(loop_sources) > 1:
+                loop_sources, update_y = self.merge_normal_exits(loop_sources, x, update_y)
+            updated = self.g.add_node("expr", update, x, update_y, self.function)
+            self.g.connect(loop_sources, updated)
+            self.g.add_edge(updated, cond, "loop", backward=True)
+            body_y = self.next_y_after(updated)
+        elif len(loop_sources) == 1:
             ref = loop_sources[0]
             loop_label = " ".join(part for part in (ref.label, "loop") if part)
             self.g.add_edge(ref.node_id, cond, loop_label, backward=True)
@@ -1096,45 +1119,6 @@ class FlowBuilder:
             self.g.add_edge(merge, cond, "loop", backward=True)
         exit_padding = 90 if has_break_exit else 0
         return after_loop, max(body_y, y + self.Y_GAP * 2) + exit_padding
-
-    def build_compact_retry_loop(
-        self,
-        stmt: Statement,
-        success_return: Statement,
-        incoming: list[ExitRef],
-        x: float,
-        y: float,
-    ) -> tuple[list[ExitRef], float]:
-        """Render deeply nested write/read retries as a readable subflow."""
-        cond = self.g.add_node("decision", stmt.label, x, y, self.function)
-        self.g.connect(incoming, cond)
-        cycle = self.g.add_node(
-            "expr",
-            "Send target power and verify readback\n(with nested read retries)",
-            x,
-            self.next_y_after(cond),
-            self.function,
-        )
-        self.g.add_edge(cond, cycle, "yes")
-        verified = self.g.add_node(
-            "decision",
-            "Target power verified?",
-            x,
-            self.next_y_after(cycle),
-            self.function,
-        )
-        self.g.add_edge(cycle, verified)
-        returned = self.g.add_node(
-            "return",
-            success_return.label,
-            x,
-            self.next_y_after(verified),
-            self.function,
-        )
-        self.g.add_edge(verified, returned, "yes")
-        self.g.add_edge(returned, self.end_id, "return")
-        self.g.add_edge(verified, cond, "no loop", backward=True)
-        return [ExitRef(cond, "no")], self.next_y_after(returned) + 20
 
     def build_do_while(
         self, stmt: Statement, incoming: list[ExitRef], x: float, y: float
@@ -1451,6 +1435,7 @@ def build_graph(functions: list[Function], detail_level: str = "standard") -> Fl
         graph.functions.append(FunctionFlow(fn.name, start, end))
         builder = FlowBuilder(graph, end, fn.name, detail_level)
         exits, next_y = builder.build_sequence(fn.body, [ExitRef(start)], x_offset, start_y + 120)
+        builder.resolve_gotos()
         end_y = max(next_y + 20, graph.max_y + 50)
         graph.set_node_position(end, x_offset, end_y)
         for ref in exits:
@@ -1509,11 +1494,6 @@ def is_end_join_edge(graph: FlowGraph, edge: Edge) -> bool:
         and graph.node(edge.source).kind == "merge"
         and graph.node(edge.target).kind == "terminator"
     )
-
-
-def is_final_join(graph: FlowGraph, node_id: str) -> bool:
-    """最终合流使用一个共同的中心坐标，避免隐形节点边界留下断口。"""
-    return any(edge.end_join and edge.source == node_id for edge in graph.edges)
 
 
 def normalize_edge_labels(graph: FlowGraph) -> None:
@@ -1654,27 +1634,41 @@ def drawio_style(kind: str) -> str:
 
 
 def drawio_edge_style(graph: FlowGraph, edge: Edge) -> str:
-    end_arrow = "none" if graph.node(edge.target).kind == "merge" else "block"
+    source = graph.node(edge.source)
+    target = graph.node(edge.target)
+    source_is_merge = source.kind == "merge"
+    target_is_merge = target.kind == "merge"
+    end_arrow = "none" if target_is_merge else "block"
     style = (
         "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;"
         "html=1;labelBackgroundColor=#ffffff;startArrow=none;jumpStyle=none;"
         f"endArrow={end_arrow};endFill=1;"
     )
     if edge.backward:
-        return style + "exitX=0;exitY=0.5;entryX=0;entryY=0.5;"
+        exit_port = "exitX=0;exitY=0.5;"
+        if source_is_merge:
+            exit_port = "exitX=0.5;exitY=0.5;exitPerimeter=0;"
+        entry_port = "entryX=0;entryY=0.5;"
+        if target_is_merge:
+            entry_port = "entryX=0.5;entryY=0.5;entryPerimeter=0;"
+        return style + exit_port + entry_port
     if is_end_join_edge(graph, edge):
         return style + "exitX=0.5;exitY=0.5;exitPerimeter=0;entryX=0.5;entryY=0;"
     entry = "entryX=0.5;entryY=0;"
-    if is_final_join(graph, edge.target):
+    if target.y < source.y:
+        entry = "entryX=0.5;entryY=1;"
+    if target_is_merge:
         entry = "entryX=0.5;entryY=0.5;entryPerimeter=0;"
+    if source_is_merge:
+        return style + "exitX=0.5;exitY=0.5;exitPerimeter=0;" + entry
     if side_routed_edge(graph, edge):
         side = route_side(graph, edge)
         if side < 0:
             return style + "exitX=0;exitY=0.5;" + entry
         return style + "exitX=1;exitY=0.5;" + entry
-    if graph.node(edge.target).y >= graph.node(edge.source).y:
+    if target.y >= source.y:
         return style + "exitX=0.5;exitY=1;" + entry
-    return style + "exitX=0.5;exitY=0;entryX=0.5;entryY=1;"
+    return style + "exitX=0.5;exitY=0;" + entry
 
 
 def indent_xml(elem: ET.Element, level: int = 0) -> None:
@@ -1768,17 +1762,22 @@ def svg_edge(graph: FlowGraph, edge: Edge) -> str:
 def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
     s = graph.node(edge.source)
     t = graph.node(edge.target)
-    target_y = t.y + t.h / 2 if is_final_join(graph, edge.target) else t.y
+    # 所有隐形锚点使用同一中心，避免透明几何体的上下边界造成断口。
+    source_bottom = s.y + s.h / 2 if s.kind == "merge" else s.y + s.h
+    source_left = s.x if s.kind == "merge" else s.x - s.w / 2
+    source_right = s.x if s.kind == "merge" else s.x + s.w / 2
+    target_left = t.x if t.kind == "merge" else t.x - t.w / 2
+    target_y = t.y + t.h / 2 if t.kind == "merge" else t.y
     if is_end_join_edge(graph, edge):
         source_y = s.y + s.h / 2
         return [(s.x, source_y), (s.x, (source_y + t.y) / 2), (t.x, t.y)]
     if edge.backward:
         left = side_route_coordinate(graph, edge, -1, 80)
         return [
-            (s.x - s.w / 2, s.y + s.h / 2),
+            (source_left, s.y + s.h / 2),
             (left, s.y + s.h / 2),
             (left, t.y + t.h / 2),
-            (t.x - t.w / 2, t.y + t.h / 2),
+            (target_left, t.y + t.h / 2),
         ]
     if side_routed_edge(graph, edge) and t.y >= s.y:
         side = route_side(graph, edge)
@@ -1806,7 +1805,7 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
         if side < 0:
             left = side_route_coordinate(graph, edge, -1, 80)
             return [
-                (s.x - s.w / 2, s.y + s.h / 2),
+                (source_left, s.y + s.h / 2),
                 (left, s.y + s.h / 2),
                 (left, merge_y),
                 (t.x, merge_y),
@@ -1814,16 +1813,18 @@ def edge_points(graph: FlowGraph, edge: Edge) -> list[tuple[float, float]]:
             ]
         right = side_route_coordinate(graph, edge, 1, 120)
         return [
-            (s.x + s.w / 2, s.y + s.h / 2),
+            (source_right, s.y + s.h / 2),
             (right, s.y + s.h / 2),
             (right, merge_y),
             (t.x, merge_y),
             (t.x, target_y),
         ]
     if t.y >= s.y:
-        mid_y = (s.y + s.h + t.y) / 2
-        return [(s.x, s.y + s.h), (s.x, mid_y), (t.x, mid_y), (t.x, target_y)]
-    return [(s.x, s.y), (t.x, t.y + t.h)]
+        mid_y = (source_bottom + target_y) / 2
+        return [(s.x, source_bottom), (s.x, mid_y), (t.x, mid_y), (t.x, target_y)]
+    source_top = s.y + s.h / 2 if s.kind == "merge" else s.y
+    target_bottom = t.y + t.h / 2 if t.kind == "merge" else t.y + t.h
+    return [(s.x, source_top), (t.x, target_bottom)]
 
 
 def side_route_coordinate(graph: FlowGraph, edge: Edge, side: int, base: float) -> float:
@@ -2814,7 +2815,7 @@ def main(argv: list[str] | None = None) -> int:
         "--detail-level",
         choices=("overview", "standard", "detailed"),
         default="standard",
-        help="Diagram density: standard keeps deep retry internals compact; detailed expands them",
+        help="Compatibility layout setting; all modes preserve the visible control-flow structure",
     )
     parser.add_argument("--preview", action="store_true", help="Also generate a PNG preview")
     parser.add_argument("--svg", action="store_true", help="Also generate an SVG preview")

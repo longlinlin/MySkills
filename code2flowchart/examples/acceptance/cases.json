@@ -1,0 +1,31 @@
+{
+  "cases": [
+    {
+      "source": "retry_write.c",
+      "function": "retry_write",
+      "expected_decisions": 3,
+      "expected_returns": 1,
+      "expected_back_edges": 1,
+      "minimum_hidden_junctions": 2,
+      "grouped_assignment_count": 5
+    },
+    {
+      "source": "multiple_returns.c",
+      "function": "select_limit",
+      "expected_decisions": 4,
+      "expected_returns": 5,
+      "expected_back_edges": 0,
+      "minimum_hidden_junctions": 1,
+      "grouped_assignment_count": 0
+    },
+    {
+      "source": "control_flow.c",
+      "function": "for_continue_case",
+      "expected_decisions": 2,
+      "expected_returns": 1,
+      "expected_back_edges": 1,
+      "minimum_hidden_junctions": 1,
+      "grouped_assignment_count": 0
+    }
+  ]
+}

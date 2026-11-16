@@ -30,7 +30,7 @@ python code2flowchart/scripts/validate.py code2flowchart/output/target_func/targ
 
 默认流程不需要第三方 Python 包。`--preview` 和 `--all` 需要可选的 Pillow；没有 Pillow 时可只使用 `--svg`。详细参数和可选的 DD/UT 输出见[使用指南](code2flowchart/USAGE.md)。
 
-导入技能时，只选择整个 `code2flowchart/` 目录，保留其中的 `SKILL.md`、`agents/`、`references/`、`scripts/`、`tests/` 和 `output/`，不只复制入口 MD。无需再安装自检、UT 或 IT 子技能。
+导入技能时，只选择整个 `code2flowchart/` 目录，保留其中的 `SKILL.md`、`agents/`、`references/`、`scripts/`、`tests/`、`examples/` 和 `output/`，不只复制入口 MD。无需再安装自检、UT 或 IT 子技能。
 
 ## 测试
 
@@ -39,6 +39,8 @@ python -B -m unittest discover -s code2flowchart/tests -v
 ```
 
 [测试工作流](.github/workflows/tests.yml)在推送和 Pull Request 时运行同一套测试，覆盖 Windows/Linux 与 Python 3.10/3.13。配置依据：[checkout](https://github.com/actions/checkout)、[setup-python](https://github.com/actions/setup-python)。自动测试不代替原生 draw.io 渲染检查、C 编译或实板验证。
+
+[固定验收样例](code2flowchart/examples/acceptance/README.md)包含高风险 C 控制流源码，以及重试、多路返回和 `for + continue` 的结构预期、可编辑图、SVG、渲染预览与自检记录。测试会重新生成图并比对基线，不自动覆盖基线。
 
 ## 维护约定
 

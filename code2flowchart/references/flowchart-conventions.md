@@ -16,6 +16,7 @@ Use this reference when adjusting the converter or manually reviewing generated 
 - 普通流程尽量自上而下，循环回边走左侧，`break/goto` 等退出边走右侧错开通道。
 - 同一顺序代码块内连续声明、赋值、自增/自减合并到一个处理框；遇到判断、循环、单独的函数调用、标签或退出语句即停止合并，不跨控制流边界。
 - 合流点只用于内部布线，图中不显示黑色圆点；回环线与退出线分别走左、右侧，不能互相交叉。
+- 不可见合流点的所有入线终点和出线起点必须是同一中心坐标；draw.io 端口设置中心且 `Perimeter=0`。不能仅把节点透明化，却让上下边界之间留下断口。
 - 即使目标相同，循环 `no`、`break`、`goto` 等不同来源的退出边也要保留独立竖向通道；只在目标附近合流，不能提前叠成一条长竖线。
 
 ## 代码转流程图的结构规范
@@ -48,6 +49,7 @@ Use this reference when adjusting the converter or manually reviewing generated 
 
 - 先判断后执行（`while`）：`入口 -> 条件`；条件为真进入循环体，循环体正常结束回到条件，为假进入循环后续。允许零次执行。
 - `for(init; cond; update)`：`初始化 -> 条件 -> 循环体 -> 更新 -> 条件`；初始化只执行一次，条件为假退出。初始化和更新可显式展开；若收在循环头中，也必须保留其执行顺序，不能把更新漏掉。
+- 转换器对三段式 `for` 显式绘制非空初始化与更新；`continue` 进入更新，`break/return/goto` 绕过更新。条件为空时不添加虚假的 no 出口；不再仅凭嵌套循环中含 return 就替换成特定业务子流程。
 - `continue` 在 for 中先执行更新再检查条件，在 while 中直接到条件，在 do/while 中到尾部条件；`break` 跳过剩余循环体和 for 更新，进入所属循环后续。
 - 先执行后判断（C/C++ `do/while`）：`入口 -> 循环体 -> 条件`；条件为真重复，为假退出，循环体至少执行一次。通用“直到型”图有时采用条件为真退出的表达，不得直接套用而反转 C/C++ 条件含义。
 - 无限循环不添加虚假的 no 出口；只有源码中的 break、return 等实际退出才形成离开路径。嵌套时 break/continue 绑定最近适用结构，switch 内 break 不能误跳出外层循环。
@@ -225,6 +227,7 @@ Use this reference when adjusting the converter or manually reviewing generated 
 - `break`: exits the nearest loop or switch and connects to the statement after that construct.
 - `continue`: targets the nearest loop's update for `for`, condition for `while`, or trailing condition for `do while`.
 - `goto`: connects directly to the matching label and does not fall through to the next statement.
+- Resolve goto labels within the complete function, including backward and cross-block references. Missing or duplicate labels stop conversion instead of leaving an apparently successful dangling path.
 - Label: acts as a merge point, then continues downward through cleanup or subsequent statements.
 - `return`: terminates at the function End, optionally through the final downward terminal junction, and never merges into later executable statements.
 - `throw`: connects directly to End unless a local `catch` branch is modeled.

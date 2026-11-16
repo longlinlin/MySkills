@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="926" height="1604" viewBox="-413 10 926 1604">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#333"/></marker></defs>
+<style>text{font-family:Arial,Helvetica,sans-serif;font-size:13px}.edge{stroke:#333;stroke-width:1.4;fill:none;marker-end:url(#arrow)}.label{font-size:12px;fill:#111}</style>
+<path class="edge" d="M 0.0,102.0 L 0.0,131.0 L 0.0,131.0 L 0.0,160.0"/><text class="label" x="6.0" y="125.0">1</text>
+<path class="edge" d="M 0.0,288.0 L 0.0,318.0 L 0.0,318.0 L 0.0,348.0"/><text class="label" x="6.0" y="312.0">2</text>
+<path class="edge" d="M 0.0,434.0 L 0.0,464.0 L 0.0,464.0 L 0.0,494.0"/><text class="label" x="6.0" y="458.0">3 yes</text>
+<path class="edge" d="M 0.0,548.0 L 0.0,581.0 L 0.0,581.0 L 0.0,614.0"/><text class="label" x="6.0" y="575.0">4</text>
+<path class="edge" d="M 0.0,700.0 L 0.0,717.0 L 0.0,717.0 L 0.0,734.0"/><text class="label" x="6.0" y="711.0">5 no</text>
+<path class="edge" d="M 0.0,820.0 L 0.0,850.0 L 0.0,850.0 L 0.0,880.0"/><text class="label" x="6.0" y="844.0">6 yes</text>
+<path class="edge" d="M 0.0,934.0 L 0.0,950.0 L 0.0,950.0 L 0.0,966.0" style="marker-end:none"/><text class="label" x="6.0" y="944.0">7</text>
+<path class="edge" d="M -110.0,777.0 L -261.0,777.0 L -261.0,944.0 L 0.0,944.0 L 0.0,966.0" style="marker-end:none"/><text class="label" x="-255.0" y="771.0">8 no</text>
+<path class="edge" d="M 0.0,966.0 L 0.0,993.0 L 0.0,993.0 L 0.0,1020.0"/>
+<path class="edge" d="M -65.0,1047.0 L -333.0,1047.0 L -333.0,391.0 L -110.0,391.0"/><text class="label" x="-327.0" y="1041.0">9 loop</text>
+<path class="edge" d="M 110.0,391.0 L 373.0,391.0 L 373.0,1149.0 L 0.0,1149.0 L 0.0,1176.0" style="marker-end:none"/><text class="label" x="379.0" y="385.0">10 no</text>
+<path class="edge" d="M 141.0,657.0 L 301.0,657.0 L 301.0,1131.0 L 0.0,1131.0 L 0.0,1176.0" style="marker-end:none"/><text class="label" x="307.0" y="651.0">11 yes break</text>
+<path class="edge" d="M 0.0,1176.0 L 0.0,1203.0 L 0.0,1203.0 L 0.0,1230.0"/>
+<path class="edge" d="M 0.0,1292.0 L 0.0,1362.0 L 0.0,1362.0 L 0.0,1432.0"/><text class="label" x="6.0" y="1356.0">12</text>
+<g><ellipse cx="0.0" cy="71.0" rx="65.0" ry="31.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="71.0" text-anchor="middle" dominant-baseline="middle">Start</text></g>
+<g><ellipse cx="0.0" cy="1463.0" rx="65.0" ry="31.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="1463.0" text-anchor="middle" dominant-baseline="middle">End</text></g>
+<g><rect x="-181.0" y="160.0" width="362.0" height="128.0" rx="0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="194.0" text-anchor="middle" dominant-baseline="middle">unsigned char payload[2]</text><text x="0.0" y="209.0" text-anchor="middle" dominant-baseline="middle">int status = - 1</text><text x="0.0" y="224.0" text-anchor="middle" dominant-baseline="middle">unsigned attempt = 0</text><text x="0.0" y="239.0" text-anchor="middle" dominant-baseline="middle">payload[0] = (unsigned char) value</text><text x="0.0" y="254.0" text-anchor="middle" dominant-baseline="middle">payload[1] = (unsigned char) (value &gt;&gt; 8)</text></g>
+<g><polygon points="0.0,348.0 110.0,391.0 0.0,434.0 -110.0,391.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="391.0" text-anchor="middle" dominant-baseline="middle">while (attempt &lt; 3)</text></g>
+<g><rect x="-117.0" y="494.0" width="234.0" height="54.0" rx="0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="521.0" text-anchor="middle" dominant-baseline="middle">status = send_packet(...)</text></g>
+<g><polygon points="0.0,614.0 141.0,657.0 0.0,700.0 -141.0,657.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="657.0" text-anchor="middle" dominant-baseline="middle">if (status == 0 || status == 2)</text></g>
+<g><polygon points="0.0,734.0 110.0,777.0 0.0,820.0 -110.0,777.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="777.0" text-anchor="middle" dominant-baseline="middle">if (attempt &lt; 2)</text></g>
+<g><rect x="-77.0" y="880.0" width="154.0" height="54.0" rx="0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="907.0" text-anchor="middle" dominant-baseline="middle">wait_ticks(...)</text></g>
+<g><rect x="-65.0" y="1020.0" width="130.0" height="54.0" rx="0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="1047.0" text-anchor="middle" dominant-baseline="middle">attempt++</text></g>
+<g><ellipse cx="0.0" cy="1261.0" rx="69.0" ry="31.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="1261.0" text-anchor="middle" dominant-baseline="middle">return status</text></g>
+</svg>

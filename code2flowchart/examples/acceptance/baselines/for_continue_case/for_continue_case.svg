@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="712" height="1284" viewBox="-342 10 712 1284">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#333"/></marker></defs>
+<style>text{font-family:Arial,Helvetica,sans-serif;font-size:13px}.edge{stroke:#333;stroke-width:1.4;fill:none;marker-end:url(#arrow)}.label{font-size:12px;fill:#111}</style>
+<path class="edge" d="M 0.0,102.0 L 0.0,131.0 L 0.0,131.0 L 0.0,160.0"/><text class="label" x="6.0" y="125.0">1</text>
+<path class="edge" d="M 0.0,214.0 L 0.0,247.0 L 0.0,247.0 L 0.0,280.0"/><text class="label" x="6.0" y="241.0">2</text>
+<path class="edge" d="M 0.0,334.0 L 0.0,367.0 L 0.0,367.0 L 0.0,400.0"/><text class="label" x="6.0" y="361.0">3</text>
+<path class="edge" d="M 0.0,486.0 L 0.0,516.0 L 0.0,516.0 L 0.0,546.0"/><text class="label" x="6.0" y="510.0">4 yes</text>
+<path class="edge" d="M 0.0,632.0 L 0.0,649.0 L 0.0,649.0 L 0.0,666.0"/><text class="label" x="6.0" y="643.0">5 no</text>
+<path class="edge" d="M 0.0,720.0 L 0.0,733.0 L 0.0,733.0 L 0.0,746.0" style="marker-end:none"/><text class="label" x="6.0" y="727.0">6</text>
+<path class="edge" d="M -110.0,589.0 L -190.0,589.0 L -190.0,730.0 L 0.0,730.0 L 0.0,746.0" style="marker-end:none"/><text class="label" x="-184.0" y="583.0">7 yes continue</text>
+<path class="edge" d="M 0.0,746.0 L 0.0,768.0 L 0.0,768.0 L 0.0,790.0"/>
+<path class="edge" d="M -65.0,817.0 L -262.0,817.0 L -262.0,443.0 L -110.0,443.0"/><text class="label" x="-256.0" y="811.0">8 loop</text>
+<path class="edge" d="M 110.0,443.0 L 230.0,443.0 L 230.0,884.0 L 0.0,884.0 L 0.0,910.0"/><text class="label" x="236.0" y="437.0">9 no</text>
+<path class="edge" d="M 0.0,972.0 L 0.0,1042.0 L 0.0,1042.0 L 0.0,1112.0"/><text class="label" x="6.0" y="1036.0">10</text>
+<g><ellipse cx="0.0" cy="71.0" rx="65.0" ry="31.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="71.0" text-anchor="middle" dominant-baseline="middle">Start</text></g>
+<g><ellipse cx="0.0" cy="1143.0" rx="65.0" ry="31.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="1143.0" text-anchor="middle" dominant-baseline="middle">End</text></g>
+<g><rect x="-69.0" y="160.0" width="138.0" height="54.0" rx="0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="187.0" text-anchor="middle" dominant-baseline="middle">int total = 0</text></g>
+<g><rect x="-65.0" y="280.0" width="130.0" height="54.0" rx="0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="307.0" text-anchor="middle" dominant-baseline="middle">int i = 0</text></g>
+<g><polygon points="0.0,400.0 110.0,443.0 0.0,486.0 -110.0,443.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="443.0" text-anchor="middle" dominant-baseline="middle">for (i &lt; limit)</text></g>
+<g><polygon points="0.0,546.0 110.0,589.0 0.0,632.0 -110.0,589.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="589.0" text-anchor="middle" dominant-baseline="middle">if (i == 1)</text></g>
+<g><rect x="-65.0" y="666.0" width="130.0" height="54.0" rx="0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="693.0" text-anchor="middle" dominant-baseline="middle">total += i</text></g>
+<g><rect x="-65.0" y="790.0" width="130.0" height="54.0" rx="0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="817.0" text-anchor="middle" dominant-baseline="middle">i++</text></g>
+<g><ellipse cx="0.0" cy="941.0" rx="65.0" ry="31.0" fill="#ffffff" stroke="#333333"/><text x="0.0" y="941.0" text-anchor="middle" dominant-baseline="middle">return total</text></g>
+</svg>

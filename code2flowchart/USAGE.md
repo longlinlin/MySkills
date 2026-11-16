@@ -185,6 +185,8 @@ AI 按[时序集成测试模式](references/integration-test-design.md)撰写所
 
 ## 校验 / Validation
 
+[固定验收样例](examples/acceptance/README.md)用于验证控制流与布局。三段式 `for` 现在显式绘制初始化、条件和更新，图中节点及边号可能变化；更新已有图后，要同步重新生成依赖边号的路径、分析和测试文档。`--detail-level` 保留兼容，但各模式均保留可见控制流，不再自动套用固定功率业务子流程。
+
 ```bash
 # 结构校验
 python code2flowchart/scripts/validate.py code2flowchart/output/<fn>/<fn>.drawio
