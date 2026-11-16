@@ -1,4 +1,0 @@
-interface:
-  display_name: "code2Flowchart"
-  short_description: "Convert C/C++ code into editable draw.io flowcharts."
-  default_prompt: "Use $code2flowchart to convert this C or C++ function into a clean editable draw.io flowchart and perform an AI review when requested."

@@ -9,11 +9,12 @@ compatible graph structures — no renderer changes needed.
 
 Usage::
 
+    import c_flowchart  # 先加载模块，注册 C/C++ 适配器。
     from lang_support import get, detect_from_extension
 
-    # Auto-detect language from file extension
-    lang_cls = detect_from_extension(Path("source.py"))
-    # -> returns py_flowchart.PyFlowchart (stub — raises NotImplementedError)
+    # 根据扩展名查找已经注册的适配器。
+    lang_cls = detect_from_extension(Path("source.cpp"))
+    # -> returns c_flowchart.CFlowchart
 
     # Explicitly request a language
     lang_cls = get("c")
@@ -22,7 +23,7 @@ Usage::
     support = lang_cls()
     tokens = support.tokenize(code)
     functions = support.parse(tokens)
-    graph = support.build_graph(functions, detail_level="full")
+    graph = support.build_graph(functions, detail_level="standard")
 """
 
 from abc import ABC, abstractmethod

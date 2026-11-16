@@ -1373,7 +1373,6 @@ RUN pip install --no-cache-dir flask gunicorn Pillow
 COPY api_server/ /app/api_server/
 COPY scripts/ /app/scripts/
 COPY references/ /app/references/
-COPY skills/ /app/skills/
 COPY output/ /app/output/
 
 # 创建 artifact store 目录

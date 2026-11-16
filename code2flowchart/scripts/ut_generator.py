@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Generate Unit Test (UT) design document and skeleton test code from analysis.json.
+"""从 analysis.json 生成 UT 设计草稿和明确跳过的 GoogleTest/Unity 骨架。
 
-Reads the structured analysis + path data and produces:
-  - <function>.ut.md   — test case design document
-  - <function>.ut.cpp  — GoogleTest + FFF skeleton
-  - <function>.ut.c    — Unity + CMock skeleton
-
-Usage: python ut_generator.py <analysis.json> [--project-prefix SWDD_CHARGE]
+输出 .ut.md、.ut.cpp、.ut.c；真实类型、输入、依赖与断言仍需项目确认。
+本脚本不执行 C/C++ 测试，也不测量代码覆盖率。
+用法：python ut_generator.py <analysis.json> [--project-prefix SWDD_CHARGE]
 """
 import argparse
 import json
@@ -14,88 +11,41 @@ import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Design method heuristics — assigned per path based on path characteristics
+# 只给出待复核的需求分析方法，不按路径序号猜测测试方法。
 # ---------------------------------------------------------------------------
 
-DESIGN_METHODS = [
-    "Equivalence Classes",
-    "Boundary Values",
-    "Error Guessing",
-    "Analysis of requirements",
-]
-
-TEST_METHODS = [
-    "Requirement-based test",
-    "Walk-through",
-    "Static code analysis",
-    "Fault injection test",
-    "Resource usage evaluation",
-]
-
-TEST_ENVIRONMENTS = [
-    "software-in-the-loop",
-    "model-in-the-loop",
-    "processor-in-the-loop",
-    "hardware-in-the-loop",
-]
+DEFAULT_DESIGN_METHOD = "Analysis of requirements (待源码复核与参数用例补充)"
+DEFAULT_TEST_METHOD = "Requirement-based test"
+DEFAULT_TEST_ENVIRONMENT = "TBD (host / SIL / PIL / HIL)"
 
 
-def _pick_design_method(path_idx: int, total: int, conditions: list[str]) -> str:
-    """Assign a design method based on path position and conditions."""
-    cond_text = " ".join(conditions).lower()
-    if "break" in cond_text or "return" in cond_text:
-        return "Error Guessing"
-    if path_idx == 1:
-        return "Equivalence Classes"
-    if path_idx == total:
-        return "Boundary Values"
-    if "loop" in cond_text or "retry" in cond_text:
-        return "Analysis of requirements"
-    return DESIGN_METHODS[path_idx % len(DESIGN_METHODS)]
+def _function_id(function: dict, index: int, project_prefix: str) -> str:
+    """让文档与两种骨架共用同一编号，缺少项目编号时使用本地草稿编号。"""
+    if function.get("function_id"):
+        return function["function_id"]
+    prefix = project_prefix or "LOCAL"
+    return f"{prefix}_F{index:03d}"
 
 
-def _pick_test_method(path_idx: int) -> str:
-    return TEST_METHODS[path_idx % len(TEST_METHODS)]
+def _markdown_cell(value: str) -> str:
+    """避免源码条件中的竖线或换行破坏 Markdown 表格。"""
+    return value.replace("|", "\\|").replace("\r\n", "<br>").replace("\n", "<br>")
 
 
 def _test_goal_from_conditions(conditions: list[str], labels: list[str] | None = None) -> str:
-    """Generate a test goal from path conditions and edge labels."""
-    if not conditions:
-        return "Verify function behavior for this path."
-
-    # Analyze labels for key path characteristics
-    label_str = " ".join(labels) if labels else ""
-    has_loop = "loop" in label_str
-    has_break = "break" in label_str
-    has_return = "return" in label_str
-
-    # Build a concise description from unique conditions
-    key_conditions = []
-    for c in conditions:
-        # Extract the decision description (before the arrow)
-        if chr(8594) in c:
-            decision = c.split(chr(8594))[0].strip()
-        elif "->" in c:
-            decision = c.split("->")[0].strip()
-        else:
-            decision = c[:60].strip()
-        # Skip duplicate decisions
-        if decision not in key_conditions:
-            key_conditions.append(decision)
-
-    if has_break and has_loop:
-        return f"Verify retry-and-break path: {key_conditions[0] if key_conditions else 'loop with break'}"
-    if has_break:
-        return f"Verify immediate success path (break on first attempt): {key_conditions[0] if key_conditions else ''}"
-    if has_loop:
-        return f"Verify retry exhaust path (loop exits after max retries)"
-    if has_return:
-        return f"Verify early return path: {key_conditions[0] if key_conditions else ''}"
-    return f"Verify path: {key_conditions[0][:80] if key_conditions else 'all branches'}"
+    """保留真实条件及其结果，不把 break 或一次回边推断为成功或重试耗尽。"""
+    evidence = conditions or labels or []
+    unique_items = []
+    for item in evidence:
+        if item not in unique_items:
+            unique_items.append(item)
+    if not unique_items:
+        return "核对可见路径的返回值与副作用，具体输入和预期待源码确认。"
+    return "核对路径证据：" + "; ".join(unique_items)
 
 
 def generate_ut_md(analysis: dict, paths_data: dict, project_prefix: str = "") -> str:
-    """Generate UT design document markdown."""
+    """生成包含未执行状态与证据缺口的 UT 设计文档。"""
     functions = analysis.get("functions", [])
     if not functions:
         return "# Unit Test Design\n\nNo functions found in analysis.\n"
@@ -106,21 +56,32 @@ def generate_ut_md(analysis: dict, paths_data: dict, project_prefix: str = "") -
     for fn in functions:
         fn_counter += 1
         name = fn.get("name", "Unknown")
-        fe = fn.get("function_evaluation", {})
-        func_id = fn.get("function_id", "")
-        if not func_id and project_prefix:
-            func_id = f"{project_prefix}_F{fn_counter:03d}"
+        func_id = _function_id(fn, fn_counter, project_prefix)
 
         paths = fn.get("paths", [])
-        branches = fn.get("branches", [])
         test_frameworks = fn.get("recommended_test_frameworks", [])
 
         lines.append(f"# Unit Test Design: {name}")
         lines.append("")
         lines.append(f"**Function ID:** `{func_id}`  ")
-        lines.append(f"**Test Environment:** {TEST_ENVIRONMENTS[0]}  ")
+        lines.append("**Design Status:** DRAFT  ")
+        lines.append("**Execution Status:** NE (未执行)  ")
+        lines.append(f"**Test Environment:** {DEFAULT_TEST_ENVIRONMENT}  ")
         lines.append(f"**Test Frameworks:** {', '.join(test_frameworks) if test_frameworks else 'GoogleTest + FFF, Unity + CMock'}  ")
-        lines.append(f"**Branch Paths:** {len(paths)}  ")
+        lines.append(f"**Candidate Graph Paths:** {len(paths)}  ")
+        lines.append("")
+        lines.append("候选路径未经数据流可行性证明，不等于实测分支覆盖率；需按源码补充等价类、边界与故障注入用例。")
+        lines.append("")
+        lines.append("## 执行与覆盖率证据")
+        lines.append("")
+        lines.append("| 项目 | 当前记录 |")
+        lines.append("| --- | --- |")
+        lines.append("| 源码版本、编译宏与需求/设计依据 | TBD |")
+        lines.append("| 选中范围、覆盖率目标与统计分母 | TBD |")
+        lines.append("| 实测分支覆盖率 | 未测量；不得用候选路径数推算 |")
+        lines.append("| 已执行数、通过数、执行率与通过率 | 未执行 / N/A |")
+        lines.append("| 构建与运行命令、工具版本、日志及覆盖率报告 | TBD |")
+        lines.append("| 失败缺陷与修复后回归范围 | TBD |")
         lines.append("")
 
         # Summary table
@@ -133,9 +94,9 @@ def generate_ut_md(analysis: dict, paths_data: dict, project_prefix: str = "") -
             seq = path.get("edge_sequence_text", "")
             conditions = path.get("conditions", [])
             pat_labels = path.get("labels", [])
-            method = _pick_design_method(i + 1, len(paths), conditions)
-            test_method = _pick_test_method(i + 1)
-            goal = _test_goal_from_conditions(conditions, pat_labels)[:80]
+            method = DEFAULT_DESIGN_METHOD
+            test_method = DEFAULT_TEST_METHOD
+            goal = _markdown_cell(_test_goal_from_conditions(conditions, pat_labels))
             lines.append(f"| {i+1} | `{tc_id}` | `{seq}` | {method} | {test_method} | {goal} |")
         lines.append("")
 
@@ -147,9 +108,9 @@ def generate_ut_md(analysis: dict, paths_data: dict, project_prefix: str = "") -
             seq = path.get("edge_sequence_text", "")
             conditions = path.get("conditions", [])
             labels = path.get("labels", [])
-            method = _pick_design_method(i + 1, len(paths), conditions)
-            test_method = _pick_test_method(i + 1)
-            goal = _test_goal_from_conditions(conditions, labels)
+            method = DEFAULT_DESIGN_METHOD
+            test_method = DEFAULT_TEST_METHOD
+            goal = _markdown_cell(_test_goal_from_conditions(conditions, labels))
 
             lines.append(f"### UT{i+1:03d}: `{tc_id}`")
             lines.append("")
@@ -161,13 +122,17 @@ def generate_ut_md(analysis: dict, paths_data: dict, project_prefix: str = "") -
             lines.append(f"| **Sequence** | `{seq}` |")
             lines.append(f"| **Case Design Method** | {method} |")
             lines.append(f"| **Test Method** | {test_method} |")
-            lines.append(f"| **Test Environment** | {TEST_ENVIRONMENTS[0]} |")
+            lines.append(f"| **Test Environment** | {DEFAULT_TEST_ENVIRONMENT} |")
             lines.append(f"| **Test Goal** | {goal} |")
+            lines.append("| **Requirement / Source Reference** | TBD：需求、源码位置与当前图版本 |")
+            lines.append("| **Input / Dependency Setup** | TBD：具体参数、全局状态、真实签名与 mock 返回序列 |")
             lines.append(f"| **Precondition** | (To be filled by review: set up mocks, initial state) |")
             lines.append(f"| **Action** | Call `{name}()` with appropriate arguments |")
             lines.append(f"| **Expected Result** | (To be filled by review: assert expected behavior) |")
             lines.append(f"| **Post-condition** | (To be filled by review: verify final state) |")
             lines.append(f"| **Actual Result** | (To be filled after test execution) |")
+            lines.append("| **Execution Status** | NE |")
+            lines.append("| **Evidence / Defect / Regression** | TBD：命令、日志、覆盖率、缺陷与回归记录 |")
             lines.append("")
 
             # Edge sequence detail
@@ -205,13 +170,13 @@ G_TEST_TEMPLATE = """/**
  */
 TEST_F({suite_name}, {tc_id})
 {{
-    // Arrange
-{fake_mocks}
-    // Act
-    // TODO: Call {fn_name}() with appropriate arguments
+    GTEST_SKIP() << "DRAFT: implement real inputs, call and assertions first";
 
-    // Assert
-    // TODO: Add EXPECT_* / ASSERT_* checks
+    // 准备：根据真实声明和当前状态配置依赖。
+{fake_mocks}
+    // 执行：补入 {fn_name} 的真实调用与具体参数。
+
+    // 断言：补入具体预期值和副作用后，才能移除跳过保护。
 }}
 """
 
@@ -223,35 +188,23 @@ def _gtest_suite_name(fn_name: str) -> str:
     return "".join(p.capitalize() for p in parts) + "Test"
 
 
-def _gtest_fake_mocks(calls: list[str]) -> str:
-    """Generate FSF_MOCK declarations for external calls."""
-    lines = []
-    for call in calls:
-        lines.append(f"    FSF_MOCK({call});")
-        lines.append(f"    EXPECT_CALL(FSF_MOCK_OBJ({call}), {call}(_)).Times(0);")
-    return "\n".join(lines) if lines else "    // No external calls to mock"
-
-
 def generate_gtest_cpp(analysis: dict, project_prefix: str = "") -> str:
-    """Generate GoogleTest + FFF skeleton C++ code."""
+    """生成明确跳过的 GoogleTest 草稿，不猜测外部函数签名或 mock 框架接口。"""
     functions = analysis.get("functions", [])
     if not functions:
         return "// No functions in analysis.\n"
 
     source = analysis.get("source", "")
     lines: list[str] = [
-        "// Auto-generated GoogleTest + FFF unit test skeleton",
-        f"// Source: {source}",
-        "// Generated by: code2flowchart ut_generator.py",
+        "// 自动生成的单元测试草稿，尚未验证编译或执行。",
+        f"// 源码：{source}",
+        "// 生成器：code2flowchart ut_generator.py",
         "//",
-        "// TODO:",
-        "//   - Fill Arrange sections with mock expectations and test data",
-        "//   - Fill Act sections with the actual function call",
-        "//   - Fill Assert sections with EXPECT_*/ASSERT_* checks",
-        "//   - Review and adjust test goals, pre/post conditions",
+        "// 按项目真实声明添加被测函数头文件与所需的 FFF 或 gMock 配置。",
+        "// 补齐输入、依赖、真实调用和断言后再移除 GTEST_SKIP。",
+        "// 跳过用例不能计入执行通过率或覆盖率。",
         "",
         '#include <gtest/gtest.h>',
-        '#include "fff.h"',
         "",
     ]
 
@@ -259,9 +212,7 @@ def generate_gtest_cpp(analysis: dict, project_prefix: str = "") -> str:
     for fn in functions:
         fn_counter += 1
         name = fn.get("name", "Unknown")
-        func_id = fn.get("function_id", "")
-        if not func_id and project_prefix:
-            func_id = f"{project_prefix}_F{fn_counter:03d}"
+        func_id = _function_id(fn, fn_counter, project_prefix)
 
         suite = _gtest_suite_name(name)
         calls = fn.get("calls", [])
@@ -273,26 +224,22 @@ def generate_gtest_cpp(analysis: dict, project_prefix: str = "") -> str:
         lines.append(f"// ============================================================")
         lines.append("")
 
-        # DEFINE_FFF_GLOBALS and mocks
+        # 缺少真实声明时只列依赖，避免生成错误类型与参数列表。
         if calls:
-            lines.append("// --- Mocks ---")
+            lines.append("// 待确认的外部依赖：")
             for call in calls:
-                lines.append(f"FAKE_VALUE_FUNC(LPI2C_Status_t, {call}, U8, U8, U8*, U16, U8, U32);")
+                lines.append(f"// {call}：核对头文件、隔离边界及参数/返回值类型。")
             lines.append("")
 
         lines.append(f"class {suite} : public ::testing::Test")
         lines.append("{")
         lines.append("protected:")
         lines.append("    void SetUp() override {")
-        if calls:
-            for call in calls:
-                lines.append(f"        FFF_RESET_HISTORY();")
-            lines.append(f"        RESET_FAKE({calls[0]});")
-        lines.append("        // TODO: Initialize test fixtures")
+        lines.append("        // TODO: 初始化本用例的全局状态，并复位已配置的全部替身。")
         lines.append("    }")
         lines.append("")
         lines.append("    void TearDown() override {")
-        lines.append("        // TODO: Clean up test fixtures")
+        lines.append("        // TODO: 释放资源，恢复共享状态。")
         lines.append("    }")
         lines.append("};")
         lines.append("")
@@ -303,8 +250,8 @@ def generate_gtest_cpp(analysis: dict, project_prefix: str = "") -> str:
             seq = path.get("edge_sequence_text", "")
             conditions = path.get("conditions", [])
             pat_labels = path.get("labels", [])
-            method = _pick_design_method(i + 1, len(paths), conditions)
-            test_method = _pick_test_method(i + 1)
+            method = DEFAULT_DESIGN_METHOD
+            test_method = DEFAULT_TEST_METHOD
             goal = _test_goal_from_conditions(conditions, pat_labels)
 
             lines.append(
@@ -314,11 +261,11 @@ def generate_gtest_cpp(analysis: dict, project_prefix: str = "") -> str:
                     fn_name=name,
                     sequence=seq,
                     design_method=method,
-                    test_env=TEST_ENVIRONMENTS[0],
+                    test_env=DEFAULT_TEST_ENVIRONMENT,
                     test_method=test_method,
                     test_goal=goal,
                     suite_name=suite,
-                    fake_mocks="    // TODO: Set up mock expectations",
+                    fake_mocks="    // TODO: 按用例设置参数、返回序列、调用次数和有依据的顺序。",
                 )
             )
             lines.append("")
@@ -346,48 +293,54 @@ UNITY_TEMPLATE = """/**
  */
 void test_{tc_id}(void)
 {{
-    // Arrange
-{cmock_expects}
-    // Act
-    // TODO: Call {fn_name}() with appropriate arguments
+    TEST_IGNORE_MESSAGE("DRAFT: implement real inputs, call and assertions first");
 
-    // Assert
-    // TODO: Add TEST_ASSERT_* checks
+    // 准备：按本用例配置实际依赖。
+{cmock_expects}
+    // 执行：补入 {fn_name} 的真实调用与具体参数。
+
+    // 断言：补入具体预期值和副作用后，才能移除忽略保护。
 }}
 """
 
 
 def generate_unity_c(analysis: dict, project_prefix: str = "") -> str:
-    """Generate Unity + CMock skeleton C code."""
+    """生成明确忽略的 Unity 草稿，CMock 配置须依据项目真实声明补充。"""
     functions = analysis.get("functions", [])
     if not functions:
         return "// No functions in analysis.\n"
 
     source = analysis.get("source", "")
     lines: list[str] = [
-        "/* Auto-generated Unity + CMock unit test skeleton",
-        f" * Source: {source}",
-        " * Generated by: code2flowchart ut_generator.py",
+        "/* 自动生成的单元测试草稿，尚未验证编译或执行。",
+        f" * 源码：{source}",
+        " * 生成器：code2flowchart ut_generator.py",
         " *",
-        " * TODO:",
-        " *   - Fill Arrange sections with mock expectations and test data",
-        " *   - Fill Act sections with the actual function call",
-        " *   - Fill Assert sections with TEST_ASSERT_* checks",
-        " *   - Review and adjust test goals, pre/post conditions",
+        " * 按项目真实声明添加被测函数头文件与 CMock 生成的 mock 头文件。",
+        " * 补齐输入、依赖、真实调用和断言后再移除 TEST_IGNORE_MESSAGE。",
+        " * 被忽略用例不能计入执行通过率或覆盖率。",
         " */",
         "",
         '#include "unity.h"',
-        '#include "cmock.h"',
+        "",
+        "void setUp(void)",
+        "{",
+        "    /* TODO: 复位全局状态并初始化全部替身。 */",
+        "}",
+        "",
+        "void tearDown(void)",
+        "{",
+        "    /* TODO: 释放资源并恢复共享状态。 */",
+        "}",
         "",
     ]
 
+    test_ids: list[str] = []
     fn_counter = 0
     for fn in functions:
         fn_counter += 1
         name = fn.get("name", "Unknown")
-        func_id = fn.get("function_id", "")
-        if not func_id and project_prefix:
-            func_id = f"{project_prefix}_F{fn_counter:03d}"
+        func_id = _function_id(fn, fn_counter, project_prefix)
 
         calls = fn.get("calls", [])
         paths = fn.get("paths", [])
@@ -398,32 +351,21 @@ def generate_unity_c(analysis: dict, project_prefix: str = "") -> str:
         lines.append(f" * ============================================================ */")
         lines.append("")
 
-        # setUp/tearDown
-        lines.append("void setUp(void)")
-        lines.append("{")
-        lines.append("    /* TODO: Initialize test fixtures */")
-        lines.append("}")
-        lines.append("")
-        lines.append("void tearDown(void)")
-        lines.append("{")
-        lines.append("    /* TODO: Clean up test fixtures */")
-        lines.append("}")
-        lines.append("")
-
         # Test cases
         for i, path in enumerate(paths):
             tc_id = f"{func_id}_UT{i+1:03d}"
+            test_ids.append(tc_id)
             seq = path.get("edge_sequence_text", "")
             conditions = path.get("conditions", [])
             pat_labels = path.get("labels", [])
-            method = _pick_design_method(i + 1, len(paths), conditions)
-            test_method = _pick_test_method(i + 1)
+            method = DEFAULT_DESIGN_METHOD
+            test_method = DEFAULT_TEST_METHOD
             goal = _test_goal_from_conditions(conditions, pat_labels)
 
             cmock_expects = ""
             if calls:
                 for call in calls:
-                    cmock_expects += f"    {call}_IgnoreAndReturn(LPI2C_STATUS_OK);\n"
+                    cmock_expects += f"    /* TODO: 按 {call} 的真实签名设置预期与返回序列。 */\n"
 
             lines.append(
                 UNITY_TEMPLATE.format(
@@ -432,23 +374,22 @@ def generate_unity_c(analysis: dict, project_prefix: str = "") -> str:
                     fn_name=name,
                     sequence=seq,
                     design_method=method,
-                    test_env=TEST_ENVIRONMENTS[0],
+                    test_env=DEFAULT_TEST_ENVIRONMENT,
                     test_method=test_method,
                     test_goal=goal,
-                    cmock_expects=cmock_expects or "    /* No external calls to mock */",
+                    cmock_expects=cmock_expects or "    /* 核对是否有未显式解析的外部依赖。 */",
                 )
             )
             lines.append("")
 
-        # Main runner
-        lines.append("int main(void)")
-        lines.append("{")
-        lines.append("    UNITY_BEGIN();")
-        for i in range(len(paths)):
-            tc_id = f"{func_id}_UT{i+1:03d}"
-            lines.append(f"    RUN_TEST(test_{tc_id});")
-        lines.append("    return UNITY_END();")
-        lines.append("}")
+    # 同一文件仅生成一个 runner，避免多函数输入时重复定义入口与夹具。
+    lines.append("int main(void)")
+    lines.append("{")
+    lines.append("    UNITY_BEGIN();")
+    for tc_id in test_ids:
+        lines.append(f"    RUN_TEST(test_{tc_id});")
+    lines.append("    return UNITY_END();")
+    lines.append("}")
 
     return "\n".join(lines)
 
@@ -474,6 +415,9 @@ def main():
 
     with open(analysis_path, encoding="utf-8") as f:
         analysis = json.load(f)
+
+    if not analysis.get("functions"):
+        sys.exit("error: no functions found in analysis.json; no UT artifacts were generated")
 
     # Also try to read paths.md for rich path data
     paths_path = analysis_path.with_suffix(".paths.md")

@@ -1,4 +1,4 @@
 interface:
   display_name: "code2Flowchart"
-  short_description: "Convert and AI-review C/C++ draw.io flowcharts."
-  default_prompt: "Use $code2flowchart to convert this C or C++ function into a clean editable draw.io flowchart and perform an AI review."
+  short_description: "Convert C/C++ flowcharts and design UT/timing tests."
+  default_prompt: "Use $code2flowchart to convert this C or C++ function into a clean editable draw.io flowchart and perform the required post-generation self-check; add an AI review only when requested."

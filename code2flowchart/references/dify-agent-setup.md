@@ -2,6 +2,12 @@
 
 Use this reference when building a Dify Workflow, Chatflow, or Agent around `code2Flowchart`.
 
+## 中文说明
+
+本文是可选的 Dify 接入设计，不包含已经实现的 `/analyze` 服务或工具插件。确定性的解析和绘图放在外部服务完成，Dify/LLM 消费 `.analysis.json` 及产物链接，用于函数说明和测试草稿。
+
+优先复用结构化分析结果，不让 LLM 凭空重建分支；但轻量解析器也可能遗漏宏或编译器扩展。JSON 与源码冲突时回到源码核对，不能把 JSON 当作已证明正确的控制流。第一版可从 Workflow 加外部 HTTP 服务开始，接口稳定后再考虑插件。
+
 ## Target Architecture
 
 Keep deterministic code analysis outside the LLM, then feed the structured result into Dify:
@@ -12,7 +18,7 @@ Keep deterministic code analysis outside the LLM, then feed the structured resul
 4. Dify uses `.analysis.json` to generate the function description, cyclomatic-complexity explanation, branch test plan, mock plan, and unit-test code.
 5. A final Dify answer node returns the report and artifact links.
 
-Do not ask the LLM to re-parse the raw C/C++ when `.analysis.json` is available. Use the JSON as the source of truth.
+Reuse `.analysis.json` for structured facts instead of asking the LLM to reconstruct the graph. Treat the source as authoritative when reviewing parser limitations or a disagreement with the JSON; uncertain control flow requires confirmation.
 
 ## Recommended First Version
 

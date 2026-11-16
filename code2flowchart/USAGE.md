@@ -2,7 +2,9 @@
 
 ## 概述 / Overview
 
-code2flowchart 是一个 C/C++ 代码 → 流程图 + 详细设计 + 单元测试的自动化技能。
+code2flowchart 专注 C/C++ 代码转流程图，以及按需的单元测试、接口与时序集成测试设计。函数详细设计（DD）仍是可选辅助输出，不是必经流程。
+
+以下命令从仓库根目录运行。安装到其他位置时，以实际技能目录定位脚本；默认输出位于技能自身的 `output/`，而不是运行命令时的工作目录。C/C++ 是当前支持的输入语言，其他语言文件仅为未实现的接口草稿。
 
 ## 快速开始 / Quick Start
 
@@ -12,20 +14,20 @@ code2flowchart 是一个 C/C++ 代码 → 流程图 + 详细设计 + 单元测�
 python code2flowchart/scripts/code2flowchart.py source.c --function target_func
 ```
 
-产出：`output/<function>/<function>.drawio`
+产出：`code2flowchart/output/<function>/<function>.drawio`
 
 ### 2. 按需生成全部产物
 
 ```bash
 python code2flowchart/scripts/code2flowchart.py source.c \
     --function target_func \
-    --all --dd --ut \
-    --project-prefix SWDD_<MODULE>
+    --all \
+    --project-prefix SWDD_MODULE
 ```
 
 | flag | 说明 |
 |------|------|
-| `--all` | 生成所有基础产物（drawio/png/svg/mermaid/paths/report/analysis/validate） |
+| `--all` | 生成全部产物并校验，包含 PNG、DD 和 UT；已隐含 `--dd --ut` |
 | `--dd` | 生成详细设计文档 `.dd.md` |
 | `--ut` | 生成单元测试文档+骨架代码 `.ut.md` `.ut.cpp` `.ut.c` |
 | `--project-prefix` | 设置 Function ID 前缀，如 `SWDD_CHARGE` |
@@ -52,13 +54,13 @@ python code2flowchart/scripts/code2flowchart.py source.c --function target_func 
 
 代理会自动：
 1. 保存代码 → 运行 `code2flowchart.py --svg --validate`
-2. 校验 `.drawio`（`validate.py`，0 errors 才继续）
+2. 严格校验 `.drawio`（`validate.py --strict`，错误和警告均需处理）
 3. 视觉自查有效的 PNG 预览或浏览器渲染后的 SVG（7项缺陷检查），不得把未渲染的 XML 校验当作视觉检查
 4. 展示结果，收集反馈（最多 5 轮）
 
 ### 生成后自动自检
 
-生成或修改图后，使用本 skill 的 AI 必须继续读取 [flowchart-self-check](skills/flowchart-self-check/SKILL.md)，执行源码核对和 `validate.py --strict`。具备视觉能力时实际查看最新渲染图，特别检查循环、提前返回与 End 上方合流；没有视觉能力或无法渲染时明确标记跳过。
+生成或修改图后，使用本 skill 的 AI 必须继续读取[自检规则](references/flowchart-self-check.md)，执行源码核对和 `validate.py --strict`。具备视觉能力时实际查看最新渲染图，特别检查循环、提前返回与 End 上方合流；没有视觉能力或无法渲染时明确标记跳过。
 
 检查结果保存在图旁的 `<basename>.self-check.md`，区分 `PASS/PARTIAL/FAIL`。仅能解析 XML、只检查旧截图，或存在未确认的控制流，都不能当成完整自检通过。这个步骤由 AI 执行，不是 Python CLI 自动调用视觉模型。
 
@@ -69,8 +71,8 @@ python code2flowchart/scripts/code2flowchart.py source.c --function target_func 
 ```
 
 代理会：
-1. 先运行 `code2flowchart.py --all --dd --ut --project-prefix <PREFIX>`
-2. **跨文件搜索调用者**：`grep -rn "函数名" --include="*.c" --include="*.h" <项目根目录>/`
+1. 先运行 `code2flowchart.py source.c --function target_func --dd --ut --project-prefix SWDD_MODULE`；不需要 PNG 时不用 `--all`
+2. **跨文件搜索调用者**：`rg -n -F "函数名" -g '*.c' -g '*.h' -g '*.cpp' -g '*.hpp' <项目根目录>`
 3. 生成 `.dd.md`（含完整调用关系）
 4. 生成 `.ut.md` + `.ut.cpp` + `.ut.c`
 5. LLM 补充 Description / Constraint / Verification / Test Goal / PrePost 条件
@@ -85,6 +87,26 @@ python code2flowchart/scripts/code2flowchart.py source.c --function target_func 
 1. 运行 `validate.py` 获取结构问题
 2. 读取源码对照流程图
 3. 写出 `.ai-review.md`（PASS / WARNING / FAIL）
+
+### 请求单元测试或时序集成测试
+
+先读取[筛选后的 UVP/ITP 检查规则](references/code-test-checklists.md)。只保留代码、图、用例与执行证据的关联，不引入安全扫描、资源盘点或客户发布流程。
+
+单元测试示例：
+
+```text
+基于当前 C 函数和流程图设计单元测试。核对可行分支、等价类、边界值和故障注入；写明真实 mock 签名、输入、初始状态及断言。未执行就写 NE，不把路径数当成覆盖率。
+```
+
+现有 `--ut` 会生成 `.ut.md/.ut.cpp/.ut.c` 草稿。没有真实依赖声明时不再套用 I2C 类型或统一成功返回值；骨架默认使用框架的跳过/忽略保护，补齐实际调用和断言后才移除。零退出码不能证明跳过的用例已通过，覆盖率需单独读取实测报告。
+
+时序或集成测试示例：
+
+```text
+检查 PortTask、功率管理函数和驱动调用的真实协作代码，设计接口与超时集成测试。列明真实组件和边界外 mock，给出事件顺序、观测点、时钟和时限来源；阈值不明写 TBD，不操作硬件。
+```
+
+AI 按[时序集成测试模式](references/integration-test-design.md)撰写所需的 `.it.md` 或 `.timing.md`；追溯矩阵仅按需生成。不存在 `--it/--timing` 参数，不自动产出已经执行的报告。用户要求执行且环境具备时，再运行项目已有框架并记录实际日志；UT 隔离测试不能冒充真实组件集成，主机逻辑超时测试不能冒充实机时序。
 
 ## DD 文档格式 / DD Document Format
 
@@ -153,31 +175,35 @@ python code2flowchart/scripts/code2flowchart.py source.c --function target_func 
 | `<fn>.analysis.json` | 结构化分析数据 | `--analysis` / `--all` |
 | `<fn>.dd.md` | DD 详细设计文档 | `--dd` |
 | `<fn>.ut.md` | UT 测试用例设计 | `--ut` |
-| `<fn>.ut.cpp` | GoogleTest+FFF 骨架 | `--ut` |
-| `<fn>.ut.c` | Unity+CMock 骨架 | `--ut` |
+| `<fn>.ut.cpp` | GoogleTest 跳过态草稿，FFF/gMock 按真实声明配置 | `--ut` |
+| `<fn>.ut.c` | Unity 忽略态草稿，CMock 按真实声明配置 | `--ut` |
 | `<fn>.ai-review.md` | AI 审查报告 | 代理模式手动触发 |
+| `<fn>.self-check.md` | 源码、严格结构与可用视觉自检结果 | 生成或修改后由 AI 执行，不是 CLI 自动生成 |
+| `<scope>.it.md` / `.timing.md` | 接口或时序集成测试设计 | AI 按需撰写，不是 CLI 参数 |
+| `<scope>.test-traceability.md` | 代码、图版本、UT/IT 与证据映射 | AI 按需撰写 |
+| `<scope>.test-result.md` | 真实运行结果、实测值和日志 | 实际执行后记录，未执行不能报 PASS |
 
 ## 校验 / Validation
 
 ```bash
 # 结构校验
-python code2flowchart/scripts/validate.py output/<fn>/<fn>.drawio
+python code2flowchart/scripts/validate.py code2flowchart/output/<fn>/<fn>.drawio
 
 # 严格模式（CI 门控）
-python code2flowchart/scripts/validate.py output/<fn>/<fn>.drawio --strict
+python code2flowchart/scripts/validate.py code2flowchart/output/<fn>/<fn>.drawio --strict
 
 # 可读性评分（越低越好）
-python code2flowchart/scripts/validate.py output/<fn>/<fn>.drawio --score
+python code2flowchart/scripts/validate.py code2flowchart/output/<fn>/<fn>.drawio --score
 ```
 
 ## 浏览器回退 / Browser Fallback
 
 ```bash
 # 只读查看
-python code2flowchart/scripts/encode_drawio_url.py output/<fn>/<fn>.drawio
+python code2flowchart/scripts/encode_drawio_url.py code2flowchart/output/<fn>/<fn>.drawio
 
 # 在线编辑
-python code2flowchart/scripts/encode_drawio_url.py --edit output/<fn>/<fn>.drawio
+python code2flowchart/scripts/encode_drawio_url.py --edit code2flowchart/output/<fn>/<fn>.drawio
 ```
 
 ## 入口点路由 / Entry-Point Routing
@@ -188,6 +214,8 @@ python code2flowchart/scripts/encode_drawio_url.py --edit output/<fn>/<fn>.drawi
 | "审查这个图" | **Review** — `validate.py` + AI 审查 |
 | "改一下这个标签" | **Refine** — 最小化 XML 编辑 |
 | "检查这个图" | **Validate** — 仅运行 `validate.py` |
+| "生成单元测试" | **UT** — 审查候选路径，生成待补齐的设计与跳过态骨架 |
+| "做时序/集成测试" | **IT/Timing** — 确认真实协作与判据，按需设计或复核执行证据 |
 
 ## 硬性限制 / Hard Limits
 
@@ -203,7 +231,7 @@ python code2flowchart/scripts/encode_drawio_url.py --edit output/<fn>/<fn>.drawi
 代理在生成 DD 时必须搜索项目根目录下的所有 `*.c` `*.h` 文件：
 
 ```bash
-grep -rn "charge_i2c_send" --include="*.c" --include="*.h" d:/project/
+rg -n -F "charge_i2c_send" -g '*.c' -g '*.h' -g '*.cpp' -g '*.hpp' d:/project/
 ```
 
 过滤掉函数定义和注释，提取调用者函数名 → 写入 DD 的 Called By 章节。

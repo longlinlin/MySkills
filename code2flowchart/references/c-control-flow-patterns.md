@@ -2,6 +2,14 @@
 
 Use this reference for flowcharts modeled after procedural C/C++ functions with retry loops, cleanup paths, task dispatchers, labels, hardware-style calls, iostream/stdout-style calls, or similar branch-heavy code. The examples below are drawn from an embedded C test file, but the drawing patterns are not STM32-specific and can also guide C++ member functions with similar control flow.
 
+## 中文说明
+
+本文件总结嵌入式 C/C++ 函数常见控制流画法，只服务代码转流程图，不用于推断项目架构。下文函数名是模式示例，不代表已扫描用户项目。
+
+重试、等待超时、`goto` 清理、任务派发和 `switch/case` 必须保留真实执行关系。打开或关闭硬件资源、状态寄存器设置、延时、错误处理和任务终止会影响外部行为，不应为简化图形而删除。
+
+硬件动作宏可在确认其含义后保留为处理节点；可能隐藏跳转的宏需要展开或标记不确定。RTOS API 是否终止当前任务必须按实际参数及实现确认，不能只根据函数名判断。
+
 ## Function Inventory
 
 - `startTest(uint8_t type)`: sets `testReg`, guards task startup with `flag_intest == 0`, creates the communication test task.
@@ -21,6 +29,13 @@ Use this reference for flowcharts modeled after procedural C/C++ functions with 
 - Treat `osDelay(10)` as a delay/process node inside retry loops.
 - Treat `PLC_*` reads and `HAL_*` calls as hardware interaction process nodes.
 - Treat `osThreadCreate` and `osThreadTerminate` as task lifecycle process nodes.
+
+## 宏与条件编译
+
+- 简单硬件动作宏可保留名称，不凭空补画内部执行步骤。
+- 宏可能含有 `return/goto/break/continue`、隐藏判断或 `do { ... } while (0)` 时，先确认展开内容；无法确认则标记部分验证。
+- 活动编译配置不明时，不把 `#if/#else` 的两个版本混成一条确定路径。使用 `--define/--undef` 指定受支持的配置，其他条件先用项目编译器预处理。
+- 宏影响重试或资源释放时，优先展开宏或缩小函数范围，再核对流程图。
 
 ## Common Patterns
 

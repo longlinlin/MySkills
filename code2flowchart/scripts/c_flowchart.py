@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
-"""C/C++ language support for code2flowchart (reference implementation).
+"""通过主转换器提供 C/C++ 适配，复用相同的预处理、解析和建图逻辑。"""
 
-This is the default and currently the only fully-implemented language support.
-It wraps the existing ``CTokenizer`` and ``CParser`` from ``code2flowchart.py``.
-"""
-
-from pathlib import Path
 from typing import Any
 
 from lang_support import LanguageSupport, register
@@ -13,17 +8,17 @@ from lang_support import LanguageSupport, register
 
 @register
 class CFlowchart(LanguageSupport):
-    """C/C++ control-flow extraction via code2flowchart's built-in parser."""
+    """使用主转换器的轻量解析器提取 C/C++ 可见控制流。"""
 
     name = "c"
     file_extensions = [".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hxx"]
     display_name = "C/C++"
 
     def tokenize(self, code: str) -> list[Any]:
-        from code2flowchart import CTokenizer
+        from code2flowchart import CTokenizer, select_preprocessor_branches
 
-        tokenizer = CTokenizer(code)
-        return list(tokenizer)
+        selected = select_preprocessor_branches(code)
+        return CTokenizer(selected).tokenize()
 
     def parse(self, tokens: list[Any]) -> list[Any]:
         from code2flowchart import CParser
@@ -34,21 +29,14 @@ class CFlowchart(LanguageSupport):
     def build_graph(
         self,
         functions: list[Any],
-        detail_level: str = "full",
+        detail_level: str = "standard",
     ) -> Any:
-        from code2flowchart import FlowBuilder, FunctionFlow
+        from code2flowchart import build_graph
 
         if not functions:
             raise ValueError("no functions parsed from source")
 
-        target = functions[0]
-        builder = FlowBuilder(target.body, detail_level)
-        builder.build()
-        graph = builder.readout()
-        graph.functions = [FunctionFlow(name=target.name,
-                                         start_id=graph.start_id,
-                                         end_id=graph.end_id)]
-        return graph
+        return build_graph(functions, detail_level)
 
     def validate_code(self, code: str) -> list[str]:
         warnings: list[str] = []

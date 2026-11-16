@@ -1,8 +1,3 @@
----
-name: flowchart-self-check
-description: "在 C/C++ 函数流程图生成或修改后执行自检：核对源码控制流、严格校验 draw.io，并在具备视觉能力时检查最新渲染图，输出可追溯的检查结果。不用于架构图或网络图。"
----
-
 # 流程图生成后自检
 
 在 `code2flowchart` 生成或修改流程图后、交给用户前执行。自检不是只检查 XML 是否可读，也不等同于运行 C 程序。
@@ -10,7 +5,7 @@ description: "在 C/C++ 函数流程图生成或修改后执行自检：核对�
 ## 输入与输出
 
 - 输入：目标函数源码、最新 `.drawio`，以及本轮生成的 SVG/PNG 和可用的分析 JSON。
-- 先读 [绘图约定](../../references/flowchart-conventions.md)。本技能目录向上两级是 `code2flowchart` 根目录，脚本位于其 `scripts` 目录。
+- 先读 [绘图约定](flowchart-conventions.md)。本文是 `code2flowchart` 的参考规则，不是独立技能；上一级是主技能根目录，脚本位于其 `scripts` 目录。
 - 输出：与 `.drawio` 同目录、同 basename 的 `<basename>.self-check.md`。只报告实际执行的检查和证据。
 - 找不到源码或无法渲染时继续完成其余检查，但相关阶段必须标为未完成，不能声称整体通过。
 
